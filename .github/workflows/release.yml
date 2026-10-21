@@ -2,14 +2,19 @@ name: Test and release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
+    paths:
+      - manifest.json
+      - .github/workflows/release.yml
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: stream-saver-release
   cancel-in-progress: false
 
 jobs:
@@ -31,15 +36,19 @@ jobs:
 
       - name: Check the release version
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_REF: ${{ github.ref }}
+          SOURCE_NAME: ${{ github.ref_name }}
         run: |
           python3 - <<'PY'
           import json
           import os
           from pathlib import Path
           version = json.loads(Path('manifest.json').read_text())['version']
-          assert os.environ['RELEASE_TAG'] == 'v' + version, 'Tag must match manifest version'
+          if os.environ['SOURCE_REF'].startswith('refs/tags/'):
+            assert os.environ['SOURCE_NAME'] == 'v' + version, 'Tag must match manifest version'
           assert Path('RELEASE_NOTES.md').read_text().startswith('# Stream Saver v' + version + '\n'), 'Update the release notes before tagging'
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+            output.write('RELEASE_TAG=v' + version + '\n')
           PY
 
       - name: Run the automated tests
@@ -73,11 +82,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; leaving it unchanged."
+            exit 0
+          fi
+          existing_commit=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha 2>/dev/null || true)
+          if [ -n "$existing_commit" ] && [ "$existing_commit" != "$GITHUB_SHA" ]; then
+            echo "Tag $RELEASE_TAG already points to a different commit; refusing to publish mismatched files."
+            exit 1
+          fi
           gh release create "$RELEASE_TAG" \
             "dist/Stream-Saver-Chrome-Extension-${RELEASE_TAG}.zip" \
-            --verify-tag \
+            --target "$GITHUB_SHA" \
             --title "Stream Saver ${RELEASE_TAG}" \
             --notes-file RELEASE_NOTES.md \
             --latest

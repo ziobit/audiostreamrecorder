@@ -184,9 +184,10 @@ If you clone the repository, select the repository root when using **Load unpack
 Node is used only for the automated tests; the extension itself needs no build step.
 
 The GitHub Actions release workflow runs the test suite, packages the extension,
-and publishes the ZIP when a `v` tag matching `manifest.json` is pushed. Update
-`RELEASE_NOTES.md` before creating a new version tag. Existing releases are not
-overwritten automatically.
+and publishes the ZIP when `manifest.json` or the release workflow changes on
+`main`, or when a matching `v` tag is pushed. Update `manifest.json` and
+`RELEASE_NOTES.md` together for each new version. The workflow creates a tag for
+that exact commit when needed. Existing releases are left unchanged.
 
 ## License
 
