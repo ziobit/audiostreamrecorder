@@ -1,0 +1,83 @@
+name: Test and release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node for the test suite
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check the release version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          version = json.loads(Path('manifest.json').read_text())['version']
+          assert os.environ['RELEASE_TAG'] == 'v' + version, 'Tag must match manifest version'
+          assert Path('RELEASE_NOTES.md').read_text().startswith('# Stream Saver v' + version + '\n'), 'Update the release notes before tagging'
+          PY
+
+      - name: Run the automated tests
+        run: node --experimental-vm-modules --test tests/recorder.test.mjs
+
+      - name: Package the extension
+        run: |
+          python3 - <<'PY'
+          import json
+          import zipfile
+          from pathlib import Path
+          version = json.loads(Path('manifest.json').read_text())['version']
+          files = [
+            'manifest.json', 'background.js', 'common.js', 'db.js',
+            'offscreen.html', 'offscreen.js', 'popup.html', 'popup.js',
+            'recordings.html', 'recordings.js', 'style.css',
+            'README.md', 'TESTING.md', 'LICENSE', 'tests/recorder.test.mjs',
+            'icons/16.png', 'icons/32.png', 'icons/48.png', 'icons/128.png'
+          ]
+          Path('dist').mkdir(exist_ok=True)
+          archive = Path('dist') / ('Stream-Saver-Chrome-Extension-v' + version + '.zip')
+          with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as output:
+            for name in files:
+              output.write(name, 'stream-saver/' + name)
+          with zipfile.ZipFile(archive) as output:
+            assert output.testzip() is None
+          print(archive)
+          PY
+
+      - name: Publish the GitHub release and attach the ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            "dist/Stream-Saver-Chrome-Extension-${RELEASE_TAG}.zip" \
+            --verify-tag \
+            --title "Stream Saver ${RELEASE_TAG}" \
+            --notes-file RELEASE_NOTES.md \
+            --latest

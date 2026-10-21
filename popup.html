@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stream Saver</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="popup">
+  <header class="brand">
+    <img src="icons/48.png" width="40" height="40" alt="">
+    <div><h1>Stream Saver</h1><p>Keep the audio you love.</p></div>
+    <span class="version">1.2</span>
+  </header>
+  <main>
+    <section class="source-card" aria-label="Audio source">
+      <span class="eyebrow" id="source-label">CURRENT TAB</span>
+      <h2 id="source-title">Finding your tab…</h2>
+      <p id="source-host">Open your audio website to begin.</p>
+    </section>
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+    <section class="recorder-card" aria-label="Recording controls">
+      <div class="recorder-top">
+        <span class="status-pill" id="status-pill"><span class="status-dot"></span><span id="status-text">Ready to record</span></span>
+        <span id="size" class="muted">0 KB</span>
+      </div>
+      <div id="timer" class="timer" aria-label="Recording duration">00:00:00</div>
+      <div class="level-track" role="meter" aria-label="Audio level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="level-meter"><div id="level"></div></div>
+      <p id="recording-hint" class="hint">Play audio in this tab, then press Record.</p>
+      <div id="settings">
+        <label for="recording-name">Recording name</label>
+        <input id="recording-name" maxlength="160" placeholder="Use the tab title" autocomplete="off">
+        <div class="quality-row"><label for="quality">Audio quality</label><select id="quality"><option value="128000">128 kbps</option><option value="192000" selected>192 kbps</option><option value="256000">256 kbps</option></select></div>
+        <label class="checkbox-row" for="wait-for-audio"><input type="checkbox" id="wait-for-audio"><span>Start recording only when audio is playing</span></label>
+        <p class="checkbox-help">Uses Chrome’s audio-playing status. Muted tabs wait until unmuted.</p>
+        <label class="checkbox-row" for="auto-stop"><input type="checkbox" id="auto-stop"><span>Stop and save when audio finishes</span></label>
+        <p class="checkbox-help">Saves to Downloads when Chrome reports silence. Pauses and buffering can also trigger this.</p>
+      </div>
+      <button id="record" class="button primary" type="button" disabled><span aria-hidden="true">●</span> Start recording</button>
+      <button id="stop" class="button stop" type="button" hidden><span aria-hidden="true">■</span> Stop &amp; save</button>
+      <p class="fine-print">Audio only · WebM / Opus · Saved on your computer</p>
+    </section>
+    <section id="last-recording" class="last-card" hidden>
+      <div><span class="eyebrow">LATEST RECORDING</span><strong id="last-title"></strong><p id="last-details"></p></div>
+      <button id="download-last" class="button small" type="button">Save again</button>
+    </section>
+    <button id="open-recordings" class="library-link" type="button">Your recordings <span aria-hidden="true">↗</span></button>
+    <p class="footer-note">You can close this popup while recording.<br>Keep the source tab open and playing.</p>
+  </main>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Your recordings · Stream Saver</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="recordings-page">
+  <div class="page-wrap">
+    <header class="page-header">
+      <div class="brand"><img src="icons/48.png" width="40" height="40" alt=""><div><h1>Stream Saver</h1><p>Your audio, kept close.</p></div></div>
+      <span class="private-tag">LOCAL RECORDINGS</span>
+    </header>
+    <main>
+      <div class="page-heading"><div><span class="eyebrow">YOUR COLLECTION</span><h2>Recordings</h2><p>Download your audio whenever you need it.</p></div><button id="refresh" class="button small" type="button">Refresh</button></div>
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+      <div class="collection-info"><span id="summary">Loading…</span><span>WebM audio</span></div>
+      <div id="recordings" class="recording-list" aria-label="Saved recordings"></div>
+      <div id="empty" class="empty-state" hidden><img src="icons/128.png" width="64" height="64" alt=""><h3>Your next listen starts here.</h3><p>Open your audio website, start playback, and click the<br>Stream Saver toolbar icon to record.</p></div>
+      <p class="archive-note">Copies stay in this Chrome profile until you delete them. Removing the extension removes its local copies; downloaded files remain on your computer.</p>
+      <details class="help"><summary>How recording works</summary><p>Record while listening in your signed-in website. No additional sign-in is needed. Recording happens in real time and includes all sound from the selected tab. Keep Chrome and the source tab open.</p><p>Enable “Start recording only when audio is playing” to wait for Chrome’s audio-playing status. No audio file is created while waiting. Muted tabs wait until unmuted. Chrome’s status may lag slightly; enable the separate “Stop and save when audio finishes” option to save automatically to Downloads when Chrome reports silence. Pauses or buffering can trigger automatic saving too.</p><p>Closing the popup or switching to another tab is fine. If the source tab closes, the recorder finishes and retains the audio here. After a browser interruption, previously stored chunks can be downloaded, but the file may be incomplete.</p><p>Files use WebM with Opus audio. Open them in Chrome or a compatible player such as VLC. These are recordings of playback, not copies of the original MP3 or AAC file.</p></details>
+    </main>
+  </div>
+  <script type="module" src="recordings.js"></script>
+</body>
+</html>
