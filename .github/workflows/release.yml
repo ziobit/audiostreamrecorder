@@ -24,7 +24,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Check out the tagged source
+      - name: Check out the release source
         uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -87,10 +87,11 @@ jobs:
             echo "Release $RELEASE_TAG already exists; leaving it unchanged."
             exit 0
           fi
-          existing_commit=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha 2>/dev/null || true)
-          if [ -n "$existing_commit" ] && [ "$existing_commit" != "$GITHUB_SHA" ]; then
-            echo "Tag $RELEASE_TAG already points to a different commit; refusing to publish mismatched files."
-            exit 1
+          if existing_commit=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha 2>/dev/null); then
+            if [ "$existing_commit" != "$GITHUB_SHA" ]; then
+              echo "Tag $RELEASE_TAG already points to a different commit; refusing to publish mismatched files."
+              exit 1
+            fi
           fi
           gh release create "$RELEASE_TAG" \
             "dist/Stream-Saver-Chrome-Extension-${RELEASE_TAG}.zip" \
