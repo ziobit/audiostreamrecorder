@@ -52,7 +52,7 @@ jobs:
           PY
 
       - name: Run the automated tests
-        run: node --experimental-vm-modules --test tests/recorder.test.mjs
+        run: node --experimental-vm-modules --test tests/*.test.mjs
 
       - name: Package the extension
         run: |
@@ -63,9 +63,11 @@ jobs:
           version = json.loads(Path('manifest.json').read_text())['version']
           files = [
             'manifest.json', 'background.js', 'common.js', 'db.js',
+            'diagnostics.js', 'diagnostics-view.js',
             'offscreen.html', 'offscreen.js', 'popup.html', 'popup.js',
             'recordings.html', 'recordings.js', 'style.css',
-            'README.md', 'TESTING.md', 'LICENSE', 'tests/recorder.test.mjs',
+            'README.md', 'RELEASE_NOTES.md', 'TESTING.md', 'LICENSE',
+            'tests/recorder.test.mjs', 'tests/diagnostics.test.mjs', 'tests/popup.test.mjs',
             'icons/16.png', 'icons/32.png', 'icons/48.png', 'icons/128.png'
           ]
           Path('dist').mkdir(exist_ok=True)
@@ -99,3 +101,4 @@ jobs:
             --title "Stream Saver ${RELEASE_TAG}" \
             --notes-file RELEASE_NOTES.md \
             --latest
+

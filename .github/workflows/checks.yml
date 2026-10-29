@@ -1,0 +1,26 @@
+name: Regression checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check JavaScript syntax
+        run: |
+          for file in *.js; do node --input-type=module --check < "$file"; done
+      - name: Run regression tests
+        run: node --experimental-vm-modules --test tests/*.test.mjs

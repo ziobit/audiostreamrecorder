@@ -1,4 +1,4 @@
-# Stream Saver 1.2.0
+# Stream Saver 1.3.0
 
 A ready-to-load Manifest V3 Chrome extension that records audio from a tab
 where the user is already signed in. Plain JavaScript; no build step, npm,
@@ -97,6 +97,83 @@ tab as audible. Closing the source tab retains the recording as described below.
 If starting the download fails, the recording remains available for a manual
 download in **Your recordings**.
 
+## Optional audio-quality diagnostics
+
+Select **Enable audio-quality diagnostics** before recording or during a live
+recording. It is off by default, and the choice is remembered on this computer.
+Recording is required: diagnostics use the existing authorized capture and do
+not start a second capture or request additional permissions.
+
+The popup displays:
+
+- **Capture AudioContext sample rate:** Chrome's Web Audio processing rate in Hz.
+- **Frequency spectrum:** an 8,192-point FFT, sampled five times per second.
+  At 48,000 Hz, bins are about 5.9 Hz apart; at 44,100 Hz, about 5.4 Hz apart.
+  The popup refreshes once per second and draws 512 peak-preserving groups on a
+  linear frequency axis, from DC to the capture Nyquist limit. The vertical axis
+  is FFT magnitude in dB, not a calibrated loudness or bit-depth measurement.
+- **Observed high-frequency cutoff:** a heuristic derived from accumulated
+  active measurements, initially requiring 50 active frames (about ten seconds
+  of audible material, longer if quiet or Chrome delays timers).
+- **Requested recording bitrate:** the selected MediaRecorder target, separate
+  from the **measured output average**, which is an approximate decimal kbps
+  calculation from committed WebM bytes and their elapsed capture time.
+
+The output average updates when a chunk is saved, about every two seconds,
+rather than dividing old bytes by a continuously advancing popup clock. It
+includes WebM headers/overhead and variable-bitrate behavior. Finalized recordings
+include the final chunk. For storage failures it describes only the saved part.
+It is not a demuxed codec payload bitrate or a measurement of the original stream.
+Values are withheld until at least one second of saved audio is available.
+Delayed MediaRecorder events, capture startup, or system sleep can make elapsed
+time differ from encoded media duration, especially for very short recordings.
+
+Analysis continues with the popup closed only when enabled. **Reset measurements**
+starts fresh evidence without interrupting recording. Disabling diagnostics
+removes its analyser branch and timer immediately and discards its evidence;
+re-enabling starts again. Every new recording also starts fresh. Waiting for audio
+allocates no FFT analyser. Stopping or capture/storage failure cleans up analysis.
+An optional-analyser failure disables diagnostics while recording continues.
+
+A compact final summary is kept locally with the recording and shown in **Your
+recordings**; spectra are not stored. A crash/reload may lose the live diagnostic
+summary, even when saved audio chunks can be recovered. Older recordings remain
+usable and do not acquire invented diagnostics.
+
+### How the cutoff estimate works
+
+Above 20 Hz, each FFT frame is active only if its strongest finite bin exceeds
+-65 dB. Active bins must reach the greater of -80 dB or 50 dB below that frame's
+peak. Once 50 active frames exist, a bin needs evidence in at least 10% of active
+frames. The highest bin centre in the highest run of at least three adjacent qualifying
+bins is the candidate cutoff. At least 128 occupied bins are required to avoid
+assigning an apparent broadband cutoff to simple tones or sparse spectra.
+Energy within the upper 2% of the capture bandwidth reports **no clear cutoff**.
+Silence does not count as evidence and does not erase a previous estimate.
+
+These thresholds are conservative heuristics, not calibrated detection or
+confidence guarantees. Memory is bounded by FFT size; evidence spans the entire
+enabled interval, not a rolling window. Reset between tracks or sources. The
+spectrum is the analyser's mono mix of tab playback: channel cancellation can
+hide energy, and any other sounds in the tab can add energy. Low-level highs,
+FFT window leakage, narrow signals, background noise and changing musical
+content can move or obscure the estimate. The displayed 0.1 kHz precision does
+not imply that level of accuracy about the source.
+
+### What cannot be inferred
+
+A persistent upper-frequency limit may suggest bandwidth limitation, filtering,
+or lossy encoding. Music with little treble can look similar. Chrome may already
+have decoded, mixed and resampled the source before capture. The AudioContext rate
+therefore describes the capture processing path, not the original encoded rate.
+
+Neither the observed cutoff nor Chrome's capture rate establishes the original
+sample rate, codec, bitrate, or whether audio was lossless. Doubling a cutoff is
+not a reliable way to recover a source sample rate. Recording at 256 kbps cannot
+restore information missing from the playback signal. Inspecting the actual
+source media/container or trustworthy stream metadata would be needed to learn
+its encoding; this extension does not inspect network requests or source files.
+
 ## Your recordings
 
 The **Your recordings** link opens the local recordings page. Each recording
@@ -146,7 +223,8 @@ login. It captures audio the selected tab is already playing. It does not add
 subscription enforcement of its own or restrict recording to a particular domain.
 
 No audio or metadata is uploaded. The extension saves audio, the recording name,
-the source hostname (not its full URL or query string), and timestamps locally.
+the source hostname (not its full URL or query string), timestamps, and optional
+diagnostic summaries locally.
 There are no analytics, host permissions, content scripts, or remote libraries.
 
 Permissions:
@@ -162,6 +240,8 @@ Permissions:
 
 - `background.js`: popup requests, capture authorization, badge, and downloads.
 - `offscreen.html` / `offscreen.js`: MediaRecorder, audio monitoring, and Blob URLs.
+- `diagnostics.js`: bounded spectrum evidence and output-bitrate calculation.
+- `diagnostics-view.js`: diagnostic labels and vanilla canvas spectrum.
 - `db.js`: transactional recording metadata and audio chunk storage.
 - `popup.html` / `popup.js`: recording controls.
 - `recordings.html` / `recordings.js`: local recording history and downloads.
@@ -183,6 +263,7 @@ The source is maintained at [ziobit/audiostreamrecorder](https://github.com/ziob
 If you clone the repository, select the repository root when using **Load unpacked**.
 Node is used only for the automated tests; the extension itself needs no build step.
 
+Pull requests run the automated suite in a read-only CI workflow.
 The GitHub Actions release workflow runs the test suite, packages the extension,
 and publishes the ZIP when `manifest.json` or the release workflow changes on
 `main`, or when a matching `v` tag is pushed. Update `manifest.json` and
@@ -201,3 +282,5 @@ Apache License 2.0. See [LICENSE](LICENSE).
 - https://developer.chrome.com/docs/extensions/reference/api/offscreen
 - https://developer.chrome.com/docs/extensions/reference/api/downloads
 - https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder
+- https://www.w3.org/TR/webaudio/#AnalyserNode
+- https://www.w3.org/TR/mediastream-recording/

@@ -96,3 +96,14 @@ select { padding: 5px 8px; font-size: 12px; }
   .recording-heading { flex-wrap: wrap; }
   .private-tag { display: none; }
 }
+
+
+.diagnostics-card { margin-top: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.diagnostics-card .checkbox-help { margin-bottom: 8px; }
+.diagnostics-metrics { font-size: 11px; margin: 8px 0; font-variant-numeric: tabular-nums; }
+.diagnostics-result { font-size: 12px; font-weight: 600; margin: 10px 0; }
+.diagnostics-card canvas { display: block; width: 100%; height: auto; }
+.diagnostics-card .fine-print { text-align: left; margin: 6px 0; }
+.diagnostics-help { font-size: 11px; color: var(--muted); margin-top: 10px; }
+.diagnostics-help summary { cursor: pointer; color: var(--ink); }
+.diagnostics-help p { margin-top: 8px; }

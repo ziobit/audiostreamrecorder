@@ -1,6 +1,17 @@
-# Stream Saver v1.2.0
+# Stream Saver v1.3.0
 
 Manifest V3 Chrome extension for recording audio from a tab where you are already signed in. Uses an offscreen document so recording continues after closing the popup.
+
+## New in 1.3.0
+
+- Optional, default-off audio-quality diagnostics: captured AudioContext rate,
+  detailed spectrum, accumulated high-frequency cutoff estimate, and live reset.
+- Requested recording bitrate separated from approximate measured WebM output
+  bitrate, including final bytes and container overhead.
+- Compact local summaries, explicit source-encoding limitations, and no new
+  permissions, dependencies, remote requests or build requirements.
+- Regression coverage for estimator behavior, optional CPU work, recording
+  lifecycle, bitrate accounting and popup controls; read-only pull-request CI.
 
 ## Included
 
@@ -13,7 +24,7 @@ Manifest V3 Chrome extension for recording audio from a tab where you are alread
 
 ## Install or update
 
-Download **Stream-Saver-Chrome-Extension-v1.2.0.zip** from the release assets and extract it. In desktop Chrome 116 or later, open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select the extracted `stream-saver` folder containing `manifest.json`.
+Download **Stream-Saver-Chrome-Extension-v1.3.0.zip** from the release assets and extract it. In desktop Chrome 116 or later, open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select the extracted `stream-saver` folder containing `manifest.json`.
 
 To update an existing installation, replace the files in the same extension folder and click **Reload** while no recording is running.
 
@@ -23,4 +34,5 @@ Automatic saves use Chrome's configured Downloads folder. Manual **Stop & save**
 
 Chrome's `audible` status describes recent sound from the whole tab. Pauses, buffering, and silent passages can trigger automatic stopping, and a short detection delay is possible. The extension does not automatically re-arm afterward.
 
-All 44 automated tests pass with mocked Chrome APIs, media capture, and storage. Native Chrome end-to-end recording has not been verified in the development environment. See `TESTING.md` for manual acceptance checks.
+All 81 automated tests pass with mocked Chrome APIs, media capture, and storage. Native Chrome end-to-end recording has not been verified in the development environment. See `TESTING.md` for manual acceptance checks.
+
