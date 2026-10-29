@@ -1,5 +1,7 @@
 import { rpc, formatDuration, formatBytes, formatDate } from './common.js';
 
+import { formatKbps, cutoffLabel } from './diagnostics-view.js';
+
 const $ = id => document.getElementById(id);
 let busy = false;
 let loading = false;
@@ -47,6 +49,10 @@ async function load() {
       heading.append(badge);
       content.append(heading);
       content.append(element('p', 'recording-meta', `${formatDate(recording.startedAt)} · ${formatDuration(recording.durationMs)} · ${formatBytes(recording.bytes)} · ${recording.host}`));
+      if (recording.outputKbps != null) content.append(element('p', 'recording-meta',
+        `Requested: ${formatKbps(recording.bitrate / 1000)} · Output average: ${formatKbps(recording.outputKbps)} (approximate, includes WebM overhead)`));
+      if (recording.diagnostics) content.append(element('p', 'recording-meta',
+        `Capture AudioContext: ${recording.diagnostics.sampleRate.toLocaleString()} Hz · ${cutoffLabel(recording.diagnostics, false)} Source encoding unknown.`));
       if (recording.note) content.append(element('p', 'recording-note', recording.note));
       const actions = element('div', 'row-actions');
       const download = element('button', 'button small', 'Download');
@@ -80,3 +86,4 @@ chrome.runtime.onMessage.addListener(message => {
 });
 await load();
 setInterval(load, 5000);
+

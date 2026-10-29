@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Stream Saver",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Record audio from your current tab, keep listening, and save it locally.",
   "minimum_chrome_version": "116",
   "permissions": ["activeTab", "tabCapture", "offscreen", "downloads"],
@@ -16,3 +16,4 @@
     "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'none'; media-src 'self' blob:; base-uri 'none'; frame-ancestors 'none'"
   }
 }
+

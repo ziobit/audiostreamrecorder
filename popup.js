@@ -1,4 +1,5 @@
 import { rpc, formatDuration, formatBytes } from './common.js';
+import { formatKbps, cutoffLabel, drawSpectrum } from './diagnostics-view.js';
 
 const $ = id => document.getElementById(id);
 let state = { status: 'idle' };
@@ -7,6 +8,7 @@ let busy = false;
 let refreshing = false;
 let connected = false;
 let shownNotice = '';
+let diagnosticsPreference = localStorage.getItem('diagnosticsEnabled') === 'true';
 
 function notice(text, error = false) {
   $('notice').textContent = text;
@@ -41,6 +43,7 @@ function render() {
     shownNotice = state.notice;
     notice(state.notice, state.noticeIsError !== false);
   }
+  renderDiagnostics();
   const last = state.lastResult;
   $('last-recording').hidden = active || !last?.bytes;
   if (last) {
@@ -48,6 +51,32 @@ function render() {
     $('last-details').textContent = `${formatDuration(last.durationMs)} · ${formatBytes(last.bytes)}${last.note ? ' · ' + last.note : ''}`;
     $('download-last').disabled = busy;
   }
+}
+
+function renderDiagnostics() {
+  const active = state.status !== 'idle';
+  const enabled = active ? state.diagnosticsEnabled === true : diagnosticsPreference;
+  $('diagnostics-enabled').checked = enabled;
+  $('diagnostics-enabled').disabled = busy || !connected || ['starting', 'stopping'].includes(state.status);
+  const record = active ? state : state.lastResult;
+  const data = active ? (enabled ? state.diagnostics : null) : state.lastResult?.diagnostics;
+  $('bitrate-details').hidden = !record;
+  $('requested-bitrate').textContent = record?.bitrate ? formatKbps(record.bitrate / 1000) : 'Unavailable';
+  $('output-bitrate').textContent = formatKbps(record?.outputKbps);
+  $('diagnostics-error').hidden = !state.diagnosticsError;
+  $('diagnostics-error').textContent = state.diagnosticsError || '';
+  $('diagnostics-details').hidden = !enabled && !data;
+  $('diagnostics-context').textContent = data
+    ? `${active ? 'Capture' : 'Last recording'} AudioContext: ${data.sampleRate.toLocaleString()} Hz · ${data.fftSize.toLocaleString()}-point FFT (${data.binHz.toFixed(1)} Hz/bin)`
+    : state.status === 'waiting' ? 'Waiting for recording to start; no audio captured yet.' : 'Measurements are available during recording.';
+  $('diagnostics-cutoff').textContent = cutoffLabel(data, active);
+  $('diagnostics-samples').textContent = data ? `${data.activeFrames} active / ${data.frames} sampled frames · 5 samples/second when running` : '';
+  const hasSpectrum = Boolean(data?.spectrum?.length);
+  $('spectrum').hidden = !hasSpectrum;
+  $('spectrum-caption').hidden = !hasSpectrum;
+  if (hasSpectrum) drawSpectrum($('spectrum'), data);
+  $('reset-diagnostics').hidden = !enabled || state.status !== 'recording';
+  $('reset-diagnostics').disabled = busy;
 }
 
 async function refresh() {
@@ -83,8 +112,22 @@ $('record').addEventListener('click', () => act(async () => {
   localStorage.setItem('waitForAudio', String(waitForAudio));
   const autoStopOnSilence = $('auto-stop').checked;
   localStorage.setItem('autoStopOnSilence', String(autoStopOnSilence));
-  state = await rpc('START', { title: $('recording-name').value, bitrate, waitForAudio, autoStopOnSilence });
+  state = await rpc('START', { title: $('recording-name').value, bitrate, waitForAudio, autoStopOnSilence, diagnosticsEnabled: diagnosticsPreference });
   render();
+}));
+
+$('diagnostics-enabled').addEventListener('change', () => {
+  const enabled = $('diagnostics-enabled').checked;
+  act(async () => {
+    if (state.status !== 'idle') state = await rpc('SET_DIAGNOSTICS', { enabled });
+    diagnosticsPreference = enabled;
+    localStorage.setItem('diagnosticsEnabled', String(enabled));
+    render();
+  });
+});
+
+$('reset-diagnostics').addEventListener('click', () => act(async () => {
+  state = await rpc('RESET_DIAGNOSTICS');
 }));
 
 $('stop').addEventListener('click', () => act(async () => {
@@ -127,3 +170,4 @@ try {
 } catch (error) { notice(error.message, true); }
 await refresh();
 setInterval(refresh, 1000);
+

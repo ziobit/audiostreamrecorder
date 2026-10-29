@@ -29,6 +29,12 @@ async function recorderHarness(options = {}) {
   const blobUrls = new Set();
   let nextBlob = 0;
   let failedWrites = false;
+  const timers = new Map();
+  const analysers = [];
+  let nextTimer = 0;
+  let tick = 1000;
+  let audioContext;
+  const clock = options.fakeClock ? { now: () => tick } : performance;
   const db = {
     async recoverRecordings() {
       events.push('recover');
@@ -68,7 +74,7 @@ async function recorderHarness(options = {}) {
   };
   class Recorder {
     static isTypeSupported() { return !options.unsupported; }
-    constructor(stream, settings) { this.stream = stream; this.mimeType = settings.mimeType; this.state = 'inactive'; captures.push(this); }
+    constructor(stream, settings) { this.settings = settings; this.stream = stream; this.mimeType = settings.mimeType; this.state = 'inactive'; captures.push(this); }
     start(timeslice) { this.timeslice = timeslice; this.state = 'recording'; }
     data(text) { this.ondataavailable?.({ data: new Blob([text]) }); }
     stop() {
@@ -85,10 +91,29 @@ async function recorderHarness(options = {}) {
   const track = { onended: null, stopped: false, stop() { this.stopped = true; } };
   const stream = { getAudioTracks: () => [track], getTracks: () => [track] };
   class AudioContext {
+    constructor() { audioContext = this; }
+    sampleRate = options.sampleRate || 48000;
     state = 'suspended';
     destination = {};
-    createMediaStreamSource() { return { connect() { events.push('monitor-source'); }, disconnect() {} }; }
-    createAnalyser() { return { fftSize: 256, connect() { events.push('monitor-speakers'); }, getByteTimeDomainData(array) { array.fill(128); } }; }
+    createMediaStreamSource() { return { connect() { events.push('monitor-source'); }, disconnect(node) { events.push(node ? 'diagnostics-disconnected' : 'source-disconnected'); } }; }
+    createAnalyser() {
+      if (options.diagnosticsSetupError && analysers.length) throw new Error('Optional analyser failed');
+      const analyser = {
+        fftSize: 256, reads: 0, disconnected: false,
+        get frequencyBinCount() { return this.fftSize / 2; },
+        connect() { events.push('monitor-speakers'); },
+        disconnect() { this.disconnected = true; },
+        getByteTimeDomainData(array) { array.fill(128); },
+        getFloatFrequencyData(array) {
+          this.reads++;
+          if (options.diagnosticsReadError) throw new Error('FFT unavailable');
+          array.fill(-100);
+          for (let i = 4; i <= Math.floor(10000 / (audioContext.sampleRate / this.fftSize)); i++) array[i] = -35;
+        }
+      };
+      analysers.push(analyser);
+      return analyser;
+    }
     async resume() { events.push('monitor-resumed'); this.state = 'running'; }
     async close() { events.push('context-closed'); this.state = 'closed'; }
   }
@@ -98,8 +123,10 @@ async function recorderHarness(options = {}) {
     async sendMessage(message) { notices.push(message); return { ok: true }; }
   } };
   const context = createContext({
-    chrome, console, Blob, DOMException, performance, crypto: webcrypto, queueMicrotask, TextEncoder,
+    chrome, console, Blob, DOMException, performance: clock, crypto: webcrypto, queueMicrotask, TextEncoder,
     MediaRecorder: Recorder, AudioContext,
+    setInterval(callback, delay) { const id = ++nextTimer; timers.set(id, { callback, delay }); return id; },
+    clearInterval(id) { timers.delete(id); },
     navigator: { mediaDevices: { async getUserMedia(constraints) {
       assert.equal(constraints.video, false);
       assert.equal(constraints.audio.mandatory.chromeMediaSource, 'tab');
@@ -116,7 +143,8 @@ async function recorderHarness(options = {}) {
   }, { context });
   const commonModule = new SourceTextModule(await source('common.js'), { context });
   const module = new SourceTextModule(await source('offscreen.js'), { context });
-  await module.link(name => name === './db.js' ? dbModule : commonModule);
+  const diagnosticsModule = new SourceTextModule(await source('diagnostics.js'), { context });
+  await module.link(name => ({ './db.js': dbModule, './common.js': commonModule, './diagnostics.js': diagnosticsModule })[name]);
   await module.evaluate();
   async function raw(type, data = {}, sender = { id: ID, url: ROOT + 'background.js' }) {
     return channel(listener, { target: 'offscreen', type, ...data }, sender);
@@ -126,8 +154,12 @@ async function recorderHarness(options = {}) {
     if (!response.ok) throw new Error(response.error);
     return response.data;
   }
-  const start = () => cmd('START', { streamId: 'single-use-id', tabId: 42, title: 'My audio', host: 'example.test', bitrate: 192000 });
-  return { cmd, raw, start, records, chunks, captures, notices, events, track, blobUrls };
+  const start = (settings = {}) => cmd('START', { streamId: 'single-use-id', tabId: 42, title: 'My audio', host: 'example.test', bitrate: 192000, ...settings });
+  return {
+    cmd, raw, start, records, chunks, captures, notices, events, track, blobUrls, timers, analysers,
+    audioContext: () => audioContext, advance(ms) { tick += ms; },
+    sample(count = 1) { for (let i = 0; i < count; i++) for (const timer of timers.values()) timer.callback(); }
+  };
 }
 
 async function workerHarness(options = {}) {
@@ -708,4 +740,165 @@ test('native auto-stop callback works after a worker restart', async () => {
   await flush();
   assert.equal(h.downloads.length, 1);
   assert.equal(h.creates(), 0);
+});
+
+
+test('diagnostics default off allocates no FFT branch or timer and leaves encoding unchanged', async () => {
+  const h = await recorderHarness();
+  const state = await h.start();
+  assert.equal(state.diagnosticsEnabled, false);
+  assert.equal(state.diagnostics, null);
+  assert.equal(h.analysers.length, 1);
+  assert.equal(h.analysers[0].fftSize, 256);
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.captures[0].settings.audioBitsPerSecond, 192000);
+  await h.cmd('STOP');
+});
+
+test('optional FFT accumulates without popup polling and resets without stopping recording', async () => {
+  const h = await recorderHarness({ sampleRate: 44100 });
+  await h.start({ diagnosticsEnabled: true });
+  assert.equal(h.timers.size, 1);
+  assert.equal([...h.timers.values()][0].delay, 200);
+  assert.equal(h.analysers[1].fftSize, 8192);
+  assert.equal(h.analysers[1].smoothingTimeConstant, 0);
+  h.sample(50);
+  let state = await h.cmd('STATUS');
+  assert.equal(state.diagnostics.sampleRate, 44100);
+  assert.equal(state.diagnostics.status, 'estimated');
+  assert.ok(Math.abs(state.diagnostics.cutoffHz - 10000) < 6);
+  assert.equal(state.diagnostics.spectrum.length, 512);
+  state = await h.cmd('RESET_DIAGNOSTICS');
+  assert.equal(state.diagnostics.activeFrames, 0);
+  assert.equal(h.timers.size, 1);
+  assert.equal(h.captures.length, 1);
+  assert.equal(h.captures[0].state, 'recording');
+  assert.equal(h.events.filter(event => event === 'monitor-speakers').length, 1);
+  await h.cmd('STOP');
+  assert.equal(h.timers.size, 0);
+});
+
+test('disabling analysis detaches only its branch, frees data and permits re-enabling', async () => {
+  const h = await recorderHarness();
+  await h.start({ diagnosticsEnabled: true });
+  h.sample(50);
+  const state = await h.cmd('SET_DIAGNOSTICS', { enabled: false });
+  assert.equal(state.diagnostics, null);
+  assert.equal(h.analysers[1].disconnected, true);
+  assert.equal(h.analysers[0].disconnected, false);
+  assert.equal(h.track.stopped, false);
+  assert.equal(h.timers.size, 0);
+  const reads = h.analysers[1].reads;
+  h.sample(5);
+  assert.equal(h.analysers[1].reads, reads);
+  await h.cmd('SET_DIAGNOSTICS', { enabled: true });
+  assert.equal((await h.cmd('STATUS')).diagnostics.activeFrames, 0);
+  const nodes = h.analysers.length;
+  await h.cmd('SET_DIAGNOSTICS', { enabled: true });
+  assert.equal(h.analysers.length, nodes, 'Repeated enable must not reset accumulated evidence');
+  await h.cmd('STOP');
+});
+
+test('waiting preserves diagnostics preference but allocates no analyser before capture', async () => {
+  const h = await recorderHarness();
+  const { waitId } = await h.cmd('ARM', { ...pendingOptions, diagnosticsEnabled: false });
+  await h.cmd('SET_DIAGNOSTICS', { enabled: true });
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.analysers.length, 0);
+  const state = await h.cmd('START', { waitId, streamId: 'fresh-id' });
+  assert.equal(state.diagnosticsEnabled, true);
+  assert.equal(h.timers.size, 1);
+  await h.cmd('STOP');
+});
+
+test('suspended audio contexts do not accumulate stale FFT evidence', async () => {
+  const h = await recorderHarness();
+  await h.start({ diagnosticsEnabled: true });
+  h.audioContext().state = 'suspended';
+  h.sample(50);
+  assert.equal((await h.cmd('STATUS')).diagnostics.frames, 0);
+  h.audioContext().state = 'running';
+  h.sample();
+  assert.equal((await h.cmd('STATUS')).diagnostics.frames, 1);
+  await h.cmd('STOP');
+});
+
+for (const failure of ['diagnosticsSetupError', 'diagnosticsReadError']) {
+  test(`${failure} disables only diagnostics and recording remains saveable`, async () => {
+    const h = await recorderHarness({ [failure]: true });
+    await h.start({ diagnosticsEnabled: true });
+    h.sample();
+    const state = await h.cmd('STATUS');
+    assert.equal(state.status, 'recording');
+    assert.equal(state.diagnosticsEnabled, false);
+    assert.match(state.diagnosticsError, /Recording continues/);
+    assert.equal(h.timers.size, 0);
+    assert.equal(h.track.stopped, false);
+    assert.equal((await h.cmd('STOP')).status, 'complete');
+  });
+}
+
+for (const ending of ['STOP', 'TAB_CLOSED', 'track', 'encoder', 'storage']) {
+  test(`diagnostics cleans up and freezes a compact summary on ${ending}`, async () => {
+    const h = await recorderHarness(ending === 'storage' ? { failAfter: 1 } : {});
+    await h.start({ diagnosticsEnabled: true });
+    h.sample(50);
+    h.captures[0].data('saved');
+    await flush();
+    if (ending === 'track') h.track.onended();
+    else if (ending === 'encoder') h.captures[0].error();
+    else if (ending === 'storage') h.captures[0].data('lost');
+    else await h.cmd(ending, { tabId: 42 });
+    await flush(); await flush();
+    const { lastResult, status } = await h.cmd('STATUS');
+    assert.equal(status, 'idle');
+    assert.equal(h.timers.size, 0);
+    assert.equal(h.analysers[1].disconnected, true);
+    assert.equal(lastResult.diagnostics.activeFrames, 50);
+    assert.equal(lastResult.diagnostics.spectrum, undefined, 'No FFT arrays persisted to IndexedDB');
+    await h.start({ diagnosticsEnabled: true });
+    assert.equal((await h.cmd('STATUS')).diagnostics.activeFrames, 0);
+    await h.cmd('STOP');
+  });
+}
+
+test('output bitrate uses committed chunk duration, not popup polling time, and includes final bytes', async () => {
+  const h = await recorderHarness({ fakeClock: true });
+  assert.equal((await h.start()).outputKbps, null);
+  h.advance(2000);
+  h.captures[0].data('x'.repeat(48000));
+  await flush();
+  assert.equal((await h.cmd('STATUS')).outputKbps, 192);
+  h.advance(1000);
+  assert.equal((await h.cmd('STATUS')).outputKbps, 192);
+  const saved = await h.cmd('STOP');
+  assert.equal(saved.outputKbps, 48005 * 8 / 3000);
+});
+
+test('output bitrate after storage failure describes only the saved portion', async () => {
+  const h = await recorderHarness({ fakeClock: true, failAfter: 1 });
+  await h.start();
+  h.advance(2000);
+  h.captures[0].data('x'.repeat(48000));
+  await flush();
+  h.advance(2000);
+  h.captures[0].data('lost');
+  await flush(); await flush();
+  const { lastResult } = await h.cmd('STATUS');
+  assert.equal(lastResult.bytes, 48000);
+  assert.equal(lastResult.outputKbps, 192);
+});
+
+test('worker forwards optional diagnostics through immediate start, waiting and controls', async () => {
+  for (const waitForAudio of [false, true]) {
+    const h = await workerHarness();
+    await h.raw('START', { diagnosticsEnabled: true, waitForAudio });
+    assert.equal(h.recorderCalls.find(item => item.type === (waitForAudio ? 'ARM' : 'START')).diagnosticsEnabled, true);
+    await h.raw('SET_DIAGNOSTICS', { enabled: true });
+    assert.equal(h.recorderCalls.at(-1).enabled, true);
+    await h.raw('SET_DIAGNOSTICS', { enabled: 'true' });
+    assert.equal(h.recorderCalls.at(-1).enabled, false);
+    await h.raw('RESET_DIAGNOSTICS');
+    assert.equal(h.recorderCalls.at(-1).type, 'RESET_DIAGNOSTICS');
+  }
 });

@@ -123,6 +123,7 @@ async function handle(message, sender) {
           title: String(message.title || tab.title || 'Recording').trim().slice(0, 160),
           host: new URL(tab.url).hostname,
           autoStopOnSilence: message.autoStopOnSilence === true,
+          diagnosticsEnabled: message.diagnosticsEnabled === true,
           wasAudible: tab.audible === true,
           bitrate: [128000, 192000, 256000].includes(message.bitrate) ? message.bitrate : 192000
         };
@@ -152,6 +153,8 @@ async function handle(message, sender) {
         return { id: result.id, warning: error.message };
       }
     }
+    case 'RESET_DIAGNOSTICS': return recorder('RESET_DIAGNOSTICS');
+    case 'SET_DIAGNOSTICS': return recorder('SET_DIAGNOSTICS', { enabled: message.enabled === true });
     case 'LIST': return recorder('LIST');
     case 'DELETE': return recorder('DELETE', { id: message.id });
     case 'DOWNLOAD': return downloadRecording(message.id);
@@ -204,3 +207,4 @@ chrome.downloads.onChanged.addListener(delta => {
 chrome.runtime.onStartup.addListener(() => {
   recorder('STATUS').then(setBadge).catch(() => {});
 });
+

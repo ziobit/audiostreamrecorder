@@ -1,5 +1,6 @@
 import * as db from './db.js';
 import { recordingFilename } from './common.js';
+import { FFT_SIZE, SAMPLE_INTERVAL_MS, SpectrumAccumulator, measuredOutputKbps } from './diagnostics.js';
 
 let current = null;
 let waiting = null;
@@ -28,6 +29,10 @@ function snapshot() {
     title: current.title, host: current.host, bytes: current.bytes,
     elapsedMs: current.startTick ? (current.stopTick || performance.now()) - current.startTick : 0,
     level, bitrate: current.bitrate, note: current.note,
+    outputKbps: measuredOutputKbps(current.bytes, current.savedDurationMs),
+    diagnosticsEnabled: current.diagnosticsEnabled,
+    diagnostics: current.quality ? { ...current.quality.snapshot(), paused: current.context.state !== 'running' } : null,
+    diagnosticsError: current.diagnosticsError,
     autoStopOnSilence: current.autoStopOnSilence, heardAudio: current.heardAudio
   };
 }
@@ -36,7 +41,56 @@ function announce() {
   chrome.runtime.sendMessage({ target: 'background', type: 'STATE_CHANGED', state: snapshot() }).catch(() => {});
 }
 
+function stopDiagnostics(session) {
+  if (session.qualityTimer !== undefined) clearInterval(session.qualityTimer);
+  delete session.qualityTimer;
+  if (session.qualityAnalyser) {
+    // Disconnect only the optional branch, never the speaker/recording paths.
+    try { session.source.disconnect(session.qualityAnalyser); } catch {}
+    try { session.qualityAnalyser.disconnect(); } catch {}
+    session.qualityAnalyser = null;
+  }
+  session.qualityBuffer = null;
+}
+
+function setDiagnostics(session, enabled) {
+  stopDiagnostics(session);
+  session.diagnosticsEnabled = enabled;
+  session.diagnosticsError = '';
+  session.quality = null;
+  if (!enabled) return;
+  try {
+    const analyser = session.context.createAnalyser();
+    session.qualityAnalyser = analyser;
+    analyser.fftSize = FFT_SIZE;
+    analyser.smoothingTimeConstant = 0;
+    session.qualityBuffer = new Float32Array(analyser.frequencyBinCount);
+    session.quality = new SpectrumAccumulator(session.context.sampleRate);
+    session.source.connect(analyser);
+    // AnalyserNode works with its output unconnected. Playback stays unchanged.
+    session.qualityTimer = setInterval(() => {
+      if (session.status !== 'recording' || session.context.state !== 'running') return;
+      try {
+        analyser.getFloatFrequencyData(session.qualityBuffer);
+        session.quality.add(session.qualityBuffer);
+      } catch {
+        failDiagnostics(session);
+      }
+    }, SAMPLE_INTERVAL_MS);
+  } catch {
+    failDiagnostics(session);
+  }
+}
+
+function failDiagnostics(session) {
+  stopDiagnostics(session);
+  session.quality = null;
+  session.diagnosticsEnabled = false;
+  session.diagnosticsError = 'Audio diagnostics unavailable. Recording continues; try enabling diagnostics again.';
+}
+
 async function cleanUp(session) {
+  stopDiagnostics(session);
   if (session.stream) session.stream.getTracks().forEach(track => track.stop());
   if (session.source) session.source.disconnect();
   if (session.context && session.context.state !== 'closed') await session.context.close().catch(() => {});
@@ -45,6 +99,7 @@ async function cleanUp(session) {
 async function finalize(session) {
   if (session.finalizing) return;
   session.finalizing = true;
+  stopDiagnostics(session);
   session.status = 'stopping';
   session.stopTick ||= performance.now();
   announce();
@@ -56,7 +111,9 @@ async function finalize(session) {
       finishedAt: Date.now(),
       // When storage fails, only describe the audio that actually reached disk.
       durationMs: session.failure ? session.savedDurationMs : session.stopTick - session.startTick,
-      note: session.failure || session.note || ''
+      note: session.failure || session.note || '',
+      outputKbps: measuredOutputKbps(session.bytes, session.failure ? session.savedDurationMs : session.stopTick - session.startTick),
+      diagnostics: session.quality?.snapshot(false) || null
     });
   } catch (error) {
     // Prior committed chunks can still be exported even if this final update failed.
@@ -89,6 +146,7 @@ function stopRecording(note = '') {
   if (session.status !== 'stopping') {
     session.status = 'stopping';
     session.stopTick = performance.now();
+    stopDiagnostics(session);
     announce();
     if (session.recorder.state !== 'inactive') session.recorder.stop();
     // onstop also fires for source loss; it follows the final dataavailable event.
@@ -111,6 +169,7 @@ async function startRecording(options) {
   const session = {
     id: crypto.randomUUID(), status: 'starting', tabId: options.tabId,
     title: options.title, host: options.host, bitrate: options.bitrate,
+    diagnosticsEnabled: options.diagnosticsEnabled === true, diagnosticsError: '',
     autoStopOnSilence: options.autoStopOnSilence === true, heardAudio: options.wasAudible === true,
     bytes: 0, index: 0, savedDurationMs: 0, writes: Promise.resolve(), note: '', failure: ''
   };
@@ -171,6 +230,7 @@ async function startRecording(options) {
     session.startTick = performance.now();
     session.recorder.start(2000);
     session.status = 'recording';
+    setDiagnostics(session, session.diagnosticsEnabled);
     announce();
     return snapshot();
   } catch (error) {
@@ -193,12 +253,23 @@ async function handle(message) {
   await ready;
   switch (message.type) {
     case 'STATUS': return snapshot();
+    case 'SET_DIAGNOSTICS':
+      if (waiting) waiting.diagnosticsEnabled = message.enabled === true;
+      else if (current?.status === 'recording') {
+        if (current.diagnosticsEnabled !== (message.enabled === true)) setDiagnostics(current, message.enabled === true);
+      } else if (current) throw new Error('Wait for recording startup or completion before changing diagnostics.');
+      announce();
+      return snapshot();
+    case 'RESET_DIAGNOSTICS':
+      if (current?.status === 'recording' && current.diagnosticsEnabled) setDiagnostics(current, true);
+      return snapshot();
     case 'ARM':
       if (current || waiting) throw new Error('A recording is already active or waiting.');
       lastNotice = '';
       waiting = {
         waitId: crypto.randomUUID(), tabId: message.tabId, title: message.title,
         host: message.host, bitrate: message.bitrate,
+        diagnosticsEnabled: message.diagnosticsEnabled === true,
         autoStopOnSilence: message.autoStopOnSilence === true
       };
       announce();
@@ -284,3 +355,4 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   );
   return true;
 });
+
