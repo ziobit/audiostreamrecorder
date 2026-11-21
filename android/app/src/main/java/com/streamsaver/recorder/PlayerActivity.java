@@ -71,7 +71,7 @@ public class PlayerActivity extends Activity {
 
   private int dp(float n) {return Math.round(n*getResources().getDisplayMetrics().density);}
   private LinearLayout stack(boolean horizontal) {
-    LinearLayout l=new LinearLayout(this);l.setOrientation(horizontal?1:LinearLayout.VERTICAL);return l;
+    LinearLayout l=new LinearLayout(this);l.setOrientation(horizontal?LinearLayout.HORIZONTAL:LinearLayout.VERTICAL);return l;
   }
   private GradientDrawable surface(int color,int radius) {
     GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(dp(radius));return d;
