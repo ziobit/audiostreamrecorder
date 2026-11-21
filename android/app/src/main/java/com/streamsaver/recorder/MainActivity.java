@@ -25,7 +25,7 @@ import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends Activity {
-  private static final int REQ_MIC = 101, REQ_CAPTURE = 102;
+  private static final int REQ_MIC = 101, REQ_CAPTURE = 102, REQ_RENAME = 104, REQ_MEDIA = 105;
   private static final int BG = Color.rgb(10,15,31);
   private static final int PANEL = Color.rgb(23,33,55);
   private static final int FORE = Color.rgb(235,244,255);
@@ -42,6 +42,9 @@ public class MainActivity extends Activity {
   private final Handler handler = new Handler(Looper.getMainLooper());
   private boolean sawRecording = false;
   private String shownError = "";
+  private Uri pendingRenameUri;
+  private String pendingRenameFilename;
+  private boolean mediaPermissionAsked = false;
 
   @Override public void onCreate(Bundle b) {
     super.onCreate(b);
@@ -51,7 +54,19 @@ public class MainActivity extends Activity {
     if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
       requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 103);
   }
-  @Override public void onResume() { super.onResume(); listRecordings(); handler.post(poll); }
+  @Override public void onResume() {
+    super.onResume();
+    listRecordings();
+    if (!mediaPermissionAsked) {
+      String permission = Build.VERSION.SDK_INT >= 33
+        ? Manifest.permission.READ_MEDIA_AUDIO : Manifest.permission.READ_EXTERNAL_STORAGE;
+      if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
+        mediaPermissionAsked = true;
+        requestPermissions(new String[]{permission}, REQ_MEDIA);
+      }
+    }
+    handler.post(poll);
+  }
   @Override public void onPause() { handler.removeCallbacks(poll); super.onPause(); }
 
   private int dp(int n) { return Math.round(n * getResources().getDisplayMetrics().density); }
@@ -142,9 +157,18 @@ public class MainActivity extends Activity {
       if(results.length>0 && results[0]==PackageManager.PERMISSION_GRANTED)begin();
       else toast("Recording permission is required.");
     }
+    if(req==REQ_MEDIA)listRecordings();
   }
   @Override protected void onActivityResult(int code,int result,Intent data) {
     super.onActivityResult(code,result,data);
+    if(code==REQ_RENAME){
+      if(result==RESULT_OK && pendingRenameUri!=null && pendingRenameFilename!=null)
+        renameFile(pendingRenameUri,pendingRenameFilename,false);
+      else if(result!=RESULT_OK)toast("Rename permission not granted.");
+      pendingRenameUri=null;
+      pendingRenameFilename=null;
+      return;
+    }
     if(code!=REQ_CAPTURE)return;
     if(result!=RESULT_OK||data==null){toast("Android capture permission was not granted.");return;}
     Intent service=new Intent(this,CaptureService.class);
@@ -188,6 +212,90 @@ public class MainActivity extends Activity {
     if(n<1024*1024)return String.format(Locale.US,"%.1f KB",n/1024.0);
     return String.format(Locale.US,"%.1f MB",n/1048576.0);
   }
+  private void showRename(Uri uri,String oldFilename) {
+    String defaultName=oldFilename;
+    if(defaultName.toLowerCase(Locale.ROOT).endsWith(".m4a"))
+      defaultName=defaultName.substring(0,defaultName.length()-4);
+    EditText field=new EditText(this);
+    field.setSingleLine(true);
+    field.setText(defaultName);
+    field.setSelectAllOnFocus(true);
+    field.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+    LinearLayout holder=column();
+    holder.setPadding(dp(24),dp(5),dp(24),0);
+    holder.addView(field,new LinearLayout.LayoutParams(-1,-2));
+    AlertDialog d=new AlertDialog.Builder(this)
+      .setTitle("Rename recording")
+      .setMessage("Change the filename without re-encoding the audio. The .m4a extension is preserved.")
+      .setView(holder)
+      .setPositiveButton("Rename",null)
+      .setNegativeButton("Cancel",null).create();
+    d.setOnShowListener(v->d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button->{
+      String text=field.getText().toString().trim();
+      if(text.toLowerCase(Locale.ROOT).endsWith(".m4a"))
+        text=text.substring(0,text.length()-4).trim();
+      if(text.isEmpty()||text.length()>110){
+        field.setError("Enter a name between 1 and 110 characters.");return;
+      }
+      if(text.matches(".*[\\\\/:*?\\\"<>|\\p{Cntrl}].*")||text.endsWith(".")){
+        field.setError("The filename contains invalid characters.");return;
+      }
+      String newName=text+".m4a";
+      if(newName.equals(oldFilename)){d.dismiss();return;}
+      if(renameFile(uri,newName,true))d.dismiss();
+    }));
+    d.show();
+    field.requestFocus();
+  }
+
+  private boolean filenameExists(Uri uri,String newName) {
+    Uri audio=MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
+    try(Cursor c=getContentResolver().query(audio,
+        new String[]{MediaStore.Audio.Media._ID},
+        MediaStore.Audio.Media.RELATIVE_PATH+" LIKE ? AND "+
+          MediaStore.Audio.Media.DISPLAY_NAME+"=?",
+        new String[]{"Music/StreamSaver/%",newName},null)){
+      while(c!=null&&c.moveToNext()){
+        Uri candidate=ContentUris.withAppendedId(audio,c.getLong(0));
+        if(!candidate.equals(uri))return true;
+      }
+    }catch(Exception e){toast("Cannot check filenames: "+e.getMessage());return true;}
+    return false;
+  }
+
+  private boolean renameFile(Uri uri,String newName,boolean validateDuplicate) {
+    if(validateDuplicate&&filenameExists(uri,newName)){
+      toast("A recording with that filename already exists.");return false;
+    }
+    try{
+      ContentValues data=new ContentValues();
+      data.put(MediaStore.Audio.Media.DISPLAY_NAME,newName);
+      int affected=getContentResolver().update(uri,data,null,null);
+      if(affected!=1){toast("File not found, or rename was refused.");return false;}
+      toast("Renamed to "+newName);
+      listRecordings();
+      return true;
+    }catch(SecurityException denied){
+      // Android can require an explicit user grant for recordings owned by another app install.
+      pendingRenameUri=uri;
+      pendingRenameFilename=newName;
+      try{
+        IntentSender sender;
+        if(Build.VERSION.SDK_INT>=30){
+          sender=MediaStore.createWriteRequest(getContentResolver(),
+            java.util.Collections.singletonList(uri)).getIntentSender();
+        }else if(denied instanceof android.app.RecoverableSecurityException){
+          sender=((android.app.RecoverableSecurityException)denied).getUserAction()
+            .getActionIntent().getIntentSender();
+        }else{
+          toast("Android denied permission to rename this file.");return false;
+        }
+        startIntentSenderForResult(sender,REQ_RENAME,null,0,0,0);
+      }catch(Exception e){toast("Cannot request rename access: "+e.getMessage());}
+      return false;
+    }catch(Exception e){toast("Rename failed: "+e.getMessage());return false;}
+  }
+
   private void listRecordings() {
     if(library==null)return;
     library.removeAllViews();
@@ -207,16 +315,18 @@ public class MainActivity extends Activity {
         LinearLayout actions=new LinearLayout(this); actions.setOrientation(0); append(item,actions,10);
         Button play=button("▶ Play",Color.rgb(38,54,73),FORE);
         Button share=button("Share",Color.rgb(38,54,73),FORE);
+        Button rename=button("Rename",Color.rgb(38,54,73),TEAL);
         Button del=button("Delete",Color.rgb(77,39,52),FORE);
-        for(Button b:new Button[]{play,share,del}){
+        for(Button b:new Button[]{play,rename,share,del}){
           LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(43),1);
           lp.setMargins(dp(2),0,dp(2),0);actions.addView(b,lp); b.setTextSize(12);
         }
         play.setOnClickListener(v->{
-          Intent open=new Intent(Intent.ACTION_VIEW).setDataAndType(uri,"audio/mp4");
-          open.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-          try{startActivity(open);}catch(Exception e){toast("No audio player available.");}
+          Intent open=new Intent(this,PlayerActivity.class).setData(uri);
+          open.putExtra("name",name);
+          startActivity(open);
         });
+        rename.setOnClickListener(v->showRename(uri,name));
         share.setOnClickListener(v->{
           Intent out=new Intent(Intent.ACTION_SEND).setType("audio/mp4");
           out.putExtra(Intent.EXTRA_STREAM,uri);
