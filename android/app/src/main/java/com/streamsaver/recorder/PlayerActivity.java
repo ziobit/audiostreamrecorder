@@ -204,7 +204,7 @@ public class PlayerActivity extends Activity {
     modeButton.setOnClickListener(v->cycleMode());
     Button fullscreen=button("⛶   FULLSCREEN VISUAL EFFECTS",0xFF263F57,CYAN);
     add(bottom,fullscreen,9);
-    fullscreen.setOnClickListener(v->setImmersive(true));
+    fullscreen.setOnClickListener(v->toggleFullscreenEffects(true));
     TextView note=text("Visual effects follow the playing audio when Android allows analysis.",11,DIM,false);
     note.setGravity(Gravity.CENTER);add(root,note,8);
   }
@@ -222,7 +222,7 @@ public class PlayerActivity extends Activity {
     fullName.setGravity(Gravity.CENTER_VERTICAL);
     Button exit=button("✕ EXIT",0xFF253349,TEXT);
     fullTop.addView(exit,new LinearLayout.LayoutParams(dp(82),dp(44)));
-    exit.setOnClickListener(v->setImmersive(false));
+    exit.setOnClickListener(v->toggleFullscreenEffects(false));
     FrameLayout.LayoutParams top=new FrameLayout.LayoutParams(-1,-2,Gravity.TOP);
     fullRoot.addView(fullTop,top);
     fullBottom=stack(false);
@@ -409,7 +409,7 @@ public class PlayerActivity extends Activity {
     handler.removeCallbacks(hideFullControls);
     handler.postDelayed(hideFullControls,5200);
   }
-  private void setImmersive(boolean enable) {
+  private void toggleFullscreenEffects(boolean enable) {
     if(immersive==enable)return;
     immersive=enable;
     ((ViewGroup)graphics.getParent()).removeView(graphics);
@@ -430,7 +430,7 @@ public class PlayerActivity extends Activity {
     }
   }
   @Override public void onBackPressed() {
-    if(immersive)setImmersive(false);else super.onBackPressed();
+    if(immersive)toggleFullscreenEffects(false);else super.onBackPressed();
   }
   @Override protected void onResume() {
     super.onResume();handler.removeCallbacks(progress);handler.post(progress);
