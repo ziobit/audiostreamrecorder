@@ -1,5 +1,9 @@
 # Stream Saver 1.3.0
 
+**Author:** Marco Vezzale — marcovezzale@gmail.com
+
+The native Android app is documented in [android/README.md](android/README.md).
+
 A ready-to-load Manifest V3 Chrome extension that records audio from a tab
 where the user is already signed in. Plain JavaScript; no build step, npm,
 Rust, server changes, external scripts, or additional account required.

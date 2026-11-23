@@ -18,12 +18,15 @@ import android.text.InputType;
 import android.view.*;
 import android.widget.*;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+/** Author: Marco Vezzale <marcovezzale@gmail.com>. */
 public class MainActivity extends Activity {
   private static final int REQ_MIC = 101, REQ_CAPTURE = 102, REQ_RENAME = 104, REQ_MEDIA = 105;
   private static final int BG = Color.rgb(10,15,31);
@@ -33,10 +36,10 @@ public class MainActivity extends Activity {
   private static final int TEAL = Color.rgb(79,222,206);
   private static final int RED = Color.rgb(255,90,115);
   private LinearLayout library;
-  private TextView status, timer, size, hint;
+  private TextView status, timer, size, hint, exportStatus;
   private ProgressBar meter;
   private EditText filename;
-  private Spinner quality;
+  private Spinner quality, outputFormat;
   private CheckBox waitAudio, autoStop;
   private Button start, stop;
   private final Handler handler = new Handler(Looper.getMainLooper());
@@ -45,6 +48,7 @@ public class MainActivity extends Activity {
   private Uri pendingRenameUri;
   private String pendingRenameFilename;
   private boolean mediaPermissionAsked = false;
+  private long lastExportVersion = -1;
 
   @Override public void onCreate(Bundle b) {
     super.onCreate(b);
@@ -94,6 +98,16 @@ public class MainActivity extends Activity {
     b.setBackground(background(color,13)); b.setTextColor(foreground);
     b.setMinHeight(dp(52)); return b;
   }
+  private ArrayAdapter<String> spinnerAdapter(String[] options) {
+    return new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,options) {
+      @Override public View getView(int position,View recycled,ViewGroup parent) {
+        TextView view=(TextView)super.getView(position,recycled,parent);
+        view.setTextColor(FORE);view.setTextSize(15);
+        view.setPadding(dp(12),dp(14),dp(12),dp(14));
+        return view;
+      }
+    };
+  }
   private void buildInterface() {
     ScrollView sc=new ScrollView(this); sc.setFillViewport(true); sc.setBackgroundColor(BG);
     LinearLayout body=column(); body.setPadding(dp(19),dp(24),dp(19),dp(28)); sc.addView(body);
@@ -116,11 +130,18 @@ public class MainActivity extends Activity {
     filename.setText("Stream Saver "+new SimpleDateFormat("yyyy-MM-dd HH-mm",Locale.US).format(new Date()));
     filename.setTextColor(FORE); filename.setTextSize(15); filename.setPadding(dp(12),dp(9),dp(12),dp(9));
     filename.setBackground(background(Color.rgb(33,47,71),11)); append(panel,filename,7);
+    append(panel,text("SAVE FORMAT",11,MUTED,true),18);
+    outputFormat=new Spinner(this);
+    outputFormat.setAdapter(spinnerAdapter(new String[]{"MP3 · .mp3","AAC · .m4a"}));
+    SharedPreferences preferences=getSharedPreferences("recording",MODE_PRIVATE);
+    outputFormat.setSelection("aac".equals(preferences.getString("format","mp3"))?1:0);
+    outputFormat.setBackground(background(Color.rgb(33,47,71),11));
+    append(panel,outputFormat,7);
     append(panel,text("RECORDING QUALITY",11,MUTED,true),18);
     quality=new Spinner(this);
-    ArrayAdapter<String> ad=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,
-      new String[]{"128 kbps · AAC","192 kbps · AAC","256 kbps · AAC"});
-    quality.setAdapter(ad); quality.setSelection(1); quality.setBackground(background(Color.rgb(33,47,71),11));
+    ArrayAdapter<String> ad=spinnerAdapter(new String[]{"128 kbps","192 kbps","256 kbps"});
+    quality.setAdapter(ad); quality.setSelection(Math.max(0,Math.min(2,preferences.getInt("quality",1))));
+    quality.setBackground(background(Color.rgb(33,47,71),11));
     append(panel,quality,7);
     waitAudio=new CheckBox(this); waitAudio.setText("Wait until audio is audible");
     waitAudio.setTextColor(FORE); waitAudio.setButtonTintList(android.content.res.ColorStateList.valueOf(TEAL));
@@ -137,14 +158,41 @@ public class MainActivity extends Activity {
       Intent i=getPackageManager().getLaunchIntentForPackage("com.android.chrome");
       if(i!=null) startActivity(i); else toast("Chrome not found on this device.");
     });
-    append(panel,text("48 kHz stereo AAC / M4A  ·  Music/StreamSaver",11,MUTED,false),13);
+    append(panel,text("48 kHz stereo · MP3 or AAC / M4A · Music/StreamSaver",11,MUTED,false),13);
     append(body,text("YOUR RECORDINGS",16,FORE,true),25);
+    exportStatus=text("",12,TEAL,false); append(body,exportStatus,8);
+    exportStatus.setVisibility(View.GONE);
     library=column(); append(body,library,10);
     append(body,text("No accounts or uploads. Only audio that its source application permits can be captured.",12,MUTED,false),18);
+    append(body,text("By "+getString(R.string.app_author)+"\n"+getString(R.string.app_author_email),12,MUTED,false),14);
+    Button about=button("About & licenses",Color.rgb(33,47,71),FORE);
+    append(body,about,10); about.setOnClickListener(v->showAbout());
+  }
+  private void showAbout() {
+    new AlertDialog.Builder(this).setTitle("Stream Saver "+BuildConfig.VERSION_NAME)
+      .setMessage("Author: "+getString(R.string.app_author)+"\n"+getString(R.string.app_author_email)
+        +"\n\nOffline playback recorder and music player.\n\nApplication: Apache License 2.0."
+        +"\nMP3 encoding: Jump3r, a Java port of LAME, under LGPL 2.1 or later."
+        +"\nThird-party components retain their original authors and licenses.")
+      .setPositiveButton("Close",null)
+      .setNeutralButton("Encoder licenses",(d,w)->showEncoderLicenses()).show();
+  }
+  private void showEncoderLicenses() {
+    try(InputStream in=getAssets().open("third_party/NOTICE.txt")) {
+      java.io.ByteArrayOutputStream bytes=new java.io.ByteArrayOutputStream();
+      byte[] buffer=new byte[4096]; int count;
+      while((count=in.read(buffer))!=-1)bytes.write(buffer,0,count);
+      TextView contents=text(bytes.toString("UTF-8"),12,Color.DKGRAY,false);
+      contents.setTextIsSelectable(true); contents.setPadding(dp(20),dp(12),dp(20),dp(12));
+      ScrollView scroll=new ScrollView(this); scroll.addView(contents);
+      new AlertDialog.Builder(this).setTitle("MP3 encoder notices").setView(scroll)
+        .setPositiveButton("Close",null).show();
+    }catch(IOException e){toast("Cannot open encoder notices: "+e.getMessage());}
   }
   private void toast(String s) { Toast.makeText(this,s,Toast.LENGTH_LONG).show(); }
   private void begin() {
     if(CaptureService.active.get())return;
+    if(Mp3ExportService.active){toast("Finish or cancel the MP3 conversion before recording.");return;}
     if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED){
       requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO},REQ_MIC);return;
     }
@@ -175,6 +223,10 @@ public class MainActivity extends Activity {
     service.setAction(CaptureService.ACTION_START);
     service.putExtra("result",result); service.putExtra("token",data);
     service.putExtra("name",filename.getText().toString().trim());
+    String format=outputFormat.getSelectedItemPosition()==0?"mp3":"aac";
+    service.putExtra("format",format);
+    getSharedPreferences("recording",MODE_PRIVATE).edit().putString("format",format)
+      .putInt("quality",quality.getSelectedItemPosition()).apply();
     service.putExtra("bitrate",new int[]{128000,192000,256000}[quality.getSelectedItemPosition()]);
     service.putExtra("wait",waitAudio.isChecked()); service.putExtra("auto",autoStop.isChecked());
     startForegroundService(service);
@@ -191,7 +243,7 @@ public class MainActivity extends Activity {
       status.setTextColor(running?RED:TEAL);
       start.setVisibility(running?View.GONE:View.VISIBLE);
       stop.setVisibility(running?View.VISIBLE:View.GONE);
-      filename.setEnabled(!running); quality.setEnabled(!running);
+      filename.setEnabled(!running); quality.setEnabled(!running); outputFormat.setEnabled(!running);
       waitAudio.setEnabled(!running); autoStop.setEnabled(!running);
       long seconds=running?Math.max(0,SystemClock.elapsedRealtime()-CaptureService.startedAt)/1000:0;
       timer.setText(String.format(Locale.US,"%02d:%02d:%02d",seconds/3600,(seconds/60)%60,seconds%60));
@@ -204,7 +256,24 @@ public class MainActivity extends Activity {
       }
       if(!running&&sawRecording)listRecordings();
       sawRecording=running;
-      handler.postDelayed(this,running?250:1000);
+      boolean exporting=Mp3ExportService.active;
+      exportStatus.setVisibility(exporting?View.VISIBLE:View.GONE);
+      if(exporting)exportStatus.setText("Saving MP3 copy"
+        +(Mp3ExportService.progress>=0?" · "+Mp3ExportService.progress+"%":"…")
+        +" · tap to cancel");
+      exportStatus.setOnClickListener(v->{
+        if(Mp3ExportService.active)startService(new Intent(MainActivity.this,Mp3ExportService.class)
+          .setAction(Mp3ExportService.ACTION_CANCEL));
+      });
+      if(lastExportVersion!=Mp3ExportService.version){
+        if(lastExportVersion>=0&&!exporting){
+          if(!Mp3ExportService.error.isEmpty())toast(Mp3ExportService.error);
+          else if(!Mp3ExportService.savedName.isEmpty())toast("Saved "+Mp3ExportService.savedName);
+        }
+        lastExportVersion=Mp3ExportService.version;
+        listRecordings();
+      }
+      handler.postDelayed(this,running||exporting?250:1000);
     }
   };
   private static String pretty(long n) {
@@ -213,8 +282,9 @@ public class MainActivity extends Activity {
     return String.format(Locale.US,"%.1f MB",n/1048576.0);
   }
   private void showRename(Uri uri,String oldFilename) {
+    String extension=oldFilename.toLowerCase(Locale.ROOT).endsWith(".mp3")?".mp3":".m4a";
     String defaultName=oldFilename;
-    if(defaultName.toLowerCase(Locale.ROOT).endsWith(".m4a"))
+    if(defaultName.toLowerCase(Locale.ROOT).endsWith(extension))
       defaultName=defaultName.substring(0,defaultName.length()-4);
     EditText field=new EditText(this);
     field.setSingleLine(true);
@@ -226,21 +296,24 @@ public class MainActivity extends Activity {
     holder.addView(field,new LinearLayout.LayoutParams(-1,-2));
     AlertDialog d=new AlertDialog.Builder(this)
       .setTitle("Rename recording")
-      .setMessage("Change the filename without re-encoding the audio. The .m4a extension is preserved.")
+      .setMessage("Change the filename without re-encoding the audio. The "+extension+" extension is preserved.")
       .setView(holder)
       .setPositiveButton("Rename",null)
       .setNegativeButton("Cancel",null).create();
     d.setOnShowListener(v->d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button->{
       String text=field.getText().toString().trim();
-      if(text.toLowerCase(Locale.ROOT).endsWith(".m4a"))
+      if(text.toLowerCase(Locale.ROOT).endsWith(extension))
         text=text.substring(0,text.length()-4).trim();
+      else if(text.toLowerCase(Locale.ROOT).matches(".*\\.(mp3|m4a)$")){
+        field.setError("Keep the "+extension+" format. Use Save as MP3 to convert an M4A file.");return;
+      }
       if(text.isEmpty()||text.length()>110){
         field.setError("Enter a name between 1 and 110 characters.");return;
       }
       if(text.matches(".*[\\\\/:*?\\\"<>|\\p{Cntrl}].*")||text.endsWith(".")){
         field.setError("The filename contains invalid characters.");return;
       }
-      String newName=text+".m4a";
+      String newName=text+extension;
       if(newName.equals(oldFilename)){d.dismiss();return;}
       if(renameFile(uri,newName,true))d.dismiss();
     }));
@@ -303,24 +376,35 @@ public class MainActivity extends Activity {
     String[] fields={MediaStore.Audio.Media._ID,MediaStore.Audio.Media.DISPLAY_NAME,MediaStore.Audio.Media.SIZE};
     int shown=0;
     try(Cursor c=getContentResolver().query(all,fields,
-      MediaStore.Audio.Media.RELATIVE_PATH+" LIKE ?",new String[]{"Music/StreamSaver/%"},
+      MediaStore.Audio.Media.RELATIVE_PATH+" LIKE ? AND "+MediaStore.Audio.Media.IS_PENDING+"=0",
+      new String[]{"Music/StreamSaver/%"},
       MediaStore.Audio.Media.DATE_ADDED+" DESC")){
       while(c!=null&&c.moveToNext()&&shown<30){
         Uri uri=ContentUris.withAppendedId(all,c.getLong(0));
         String name=c.getString(1);
+        boolean isMp3=name.toLowerCase(Locale.ROOT).endsWith(".mp3");
         long length=c.getLong(2);
         LinearLayout item=card();append(library,item,shown==0?0:9);
         append(item,text(name,15,FORE,true),0);
-        append(item,text(pretty(length)+" · M4A/AAC",12,MUTED,false),5);
+        append(item,text(pretty(length)+(isMp3?" · MP3":" · M4A / AAC"),12,MUTED,false),5);
         LinearLayout actions=new LinearLayout(this); actions.setOrientation(0); append(item,actions,10);
         Button play=button("▶ Play",Color.rgb(38,54,73),FORE);
         Button share=button("Share",Color.rgb(38,54,73),FORE);
         Button rename=button("Rename",Color.rgb(38,54,73),TEAL);
         Button del=button("Delete",Color.rgb(77,39,52),FORE);
-        for(Button b:new Button[]{play,rename,share,del}){
-          LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(43),1);
+        for(Button b:new Button[]{play,rename,share}){
+          LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(48),1);
           lp.setMargins(dp(2),0,dp(2),0);actions.addView(b,lp); b.setTextSize(12);
         }
+        LinearLayout more=new LinearLayout(this); append(item,more,7);
+        if(!isMp3){
+          Button export=button("Save as MP3",Color.rgb(38,54,73),TEAL);
+          LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(48),2);
+          lp.setMargins(dp(2),0,dp(2),0);more.addView(export,lp);export.setTextSize(12);
+          export.setOnClickListener(v->exportMp3(uri,name));
+        }
+        LinearLayout.LayoutParams removeParams=new LinearLayout.LayoutParams(0,dp(48),1);
+        removeParams.setMargins(dp(2),0,dp(2),0);more.addView(del,removeParams);del.setTextSize(12);
         play.setOnClickListener(v->{
           Intent open=new Intent(this,PlayerActivity.class).setData(uri);
           open.putExtra("name",name);
@@ -328,7 +412,7 @@ public class MainActivity extends Activity {
         });
         rename.setOnClickListener(v->showRename(uri,name));
         share.setOnClickListener(v->{
-          Intent out=new Intent(Intent.ACTION_SEND).setType("audio/mp4");
+          Intent out=new Intent(Intent.ACTION_SEND).setType(isMp3?"audio/mpeg":"audio/mp4");
           out.putExtra(Intent.EXTRA_STREAM,uri);
           out.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
           startActivity(Intent.createChooser(out,"Share recording"));
@@ -342,6 +426,22 @@ public class MainActivity extends Activity {
       }
     }catch(Exception e){append(library,text("Unable to read recordings: "+e.getMessage(),12,RED,false),0);return;}
     if(shown==0)append(library,text("No recordings yet.",14,MUTED,false),4);
+  }
+
+  private void exportMp3(Uri uri,String name) {
+    if(Mp3ExportService.active){toast("An MP3 copy is already being saved.");return;}
+    if(CaptureService.active.get()){toast("Finish the current recording before converting a file.");return;}
+    String[] choices={"128 kbps","192 kbps","256 kbps"};
+    new AlertDialog.Builder(this).setTitle("Save an MP3 copy")
+      .setSingleChoiceItems(choices,1,null)
+      .setPositiveButton("Save",(dialog,which)->{
+        int selected=((AlertDialog)dialog).getListView().getCheckedItemPosition();
+        Intent convert=new Intent(this,Mp3ExportService.class).setAction(Mp3ExportService.ACTION_EXPORT)
+          .setData(uri).putExtra("name",name)
+          .putExtra("bitrate",new int[]{128,192,256}[Math.max(0,selected)]);
+        try{startForegroundService(convert);toast("Saving an MP3 copy. Your original stays unchanged.");}
+        catch(Exception e){toast("Cannot start MP3 export: "+e.getMessage());}
+      }).setNegativeButton("Cancel",null).show();
   }
 
   public static class CaptureService extends Service {
@@ -359,6 +459,8 @@ public class MainActivity extends Activity {
     private AudioRecord capture;
     private MediaCodec encoder;
     private MediaMuxer muxer;
+    private Mp3Encoder mp3;
+    private OutputStream mp3Stream;
     private ParcelFileDescriptor fd;
     private Uri file;
     private Thread thread;
@@ -405,7 +507,8 @@ public class MainActivity extends Activity {
         int bitrate=intent.getIntExtra("bitrate",192000);
         boolean wait=intent.getBooleanExtra("wait",false);
         boolean auto=intent.getBooleanExtra("auto",false);
-        thread=new Thread(()->record(name,bitrate,wait,auto),"StreamSaverAudio");
+        boolean asMp3="mp3".equals(intent.getStringExtra("format"));
+        thread=new Thread(()->record(name,bitrate,wait,auto,asMp3),"StreamSaverAudio");
         thread.start();
       }catch(Exception e){
         error="Could not start: "+e.getMessage();
@@ -429,8 +532,9 @@ public class MainActivity extends Activity {
       }
       return count==0?0:Math.sqrt(sum/count);
     }
-    private void record(String title,int bitrate,boolean wait,boolean auto){
-      long frames=0,silentAt=0;boolean heard=false;waiting=wait;
+    private void record(String title,int bitrate,boolean wait,boolean auto,boolean asMp3){
+      long frames=0,silentAt=0;boolean heard=false,completed=false;waiting=wait;
+      muxerStarted=false;writeStarted=false;track=-1;
       try{
         AudioPlaybackCaptureConfiguration conf=new AudioPlaybackCaptureConfiguration.Builder(projection)
           .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
@@ -440,73 +544,109 @@ public class MainActivity extends Activity {
         int min=AudioRecord.getMinBufferSize(RATE,AudioFormat.CHANNEL_IN_STEREO,AudioFormat.ENCODING_PCM_16BIT);
         if(min<1)throw new IOException("Device cannot capture 48 kHz stereo audio");
         capture=new AudioRecord.Builder().setAudioPlaybackCaptureConfig(conf).setAudioFormat(pcm)
-          .setBufferSizeInBytes(Math.max(min*4,16384)).build();
+          .setBufferSizeInBytes(Math.max(min*4,65536)).build();
         if(capture.getState()!=AudioRecord.STATE_INITIALIZED)throw new IOException("Could not initialize playback capture");
-        MediaFormat format=MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC,RATE,CHANNELS);
-        format.setInteger(MediaFormat.KEY_AAC_PROFILE,MediaCodecInfo.CodecProfileLevel.AACObjectLC);
-        format.setInteger(MediaFormat.KEY_BIT_RATE,bitrate);
-        encoder=MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC);
-        encoder.configure(format,null,null,MediaCodec.CONFIGURE_FLAG_ENCODE);encoder.start();
+        if(bitrate!=128000&&bitrate!=192000&&bitrate!=256000)bitrate=192000;
+        if(!asMp3){
+          MediaFormat format=MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC,RATE,CHANNELS);
+          format.setInteger(MediaFormat.KEY_AAC_PROFILE,MediaCodecInfo.CodecProfileLevel.AACObjectLC);
+          format.setInteger(MediaFormat.KEY_BIT_RATE,bitrate);
+          encoder=MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC);
+          encoder.configure(format,null,null,MediaCodec.CONFIGURE_FLAG_ENCODE);encoder.start();
+        }
 
         String safe=title==null?"Stream Saver":title.trim();
         safe=safe.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]","_");
+        safe=safe.replaceFirst("(?i)\\.(mp3|m4a)$","");
         if(safe.isEmpty())safe="Stream Saver";
         if(safe.length()>110)safe=safe.substring(0,110);
-        String full=safe+"_"+new SimpleDateFormat("yyyyMMdd_HHmmss",Locale.US).format(new Date())+".m4a";
+        String full=safe+"_"+new SimpleDateFormat("yyyyMMdd_HHmmss",Locale.US).format(new Date())
+          +(asMp3?".mp3":".m4a");
         ContentValues values=new ContentValues();
         values.put(MediaStore.Audio.Media.DISPLAY_NAME,full);
-        values.put(MediaStore.Audio.Media.MIME_TYPE,"audio/mp4");
+        values.put(MediaStore.Audio.Media.MIME_TYPE,asMp3?"audio/mpeg":"audio/mp4");
         values.put(MediaStore.Audio.Media.RELATIVE_PATH,"Music/StreamSaver/");
         values.put(MediaStore.Audio.Media.IS_PENDING,1);
         file=getContentResolver().insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,values);
         if(file==null)throw new IOException("Cannot create recording file");
-        fd=getContentResolver().openFileDescriptor(file,"w");
+        fd=getContentResolver().openFileDescriptor(file,"rw");
         if(fd==null)throw new IOException("Cannot open recording file");
-        muxer=new MediaMuxer(fd.getFileDescriptor(),MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+        if(asMp3){
+          mp3Stream=new ParcelFileDescriptor.AutoCloseOutputStream(fd);
+          mp3=new Mp3Encoder(mp3Stream,RATE,CHANNELS,bitrate/1000);
+        }else muxer=new MediaMuxer(fd.getFileDescriptor(),MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
         capture.startRecording();
         byte[] chunk=new byte[8192];
         while(!ending){
-          int ix=encoder.dequeueInputBuffer(10000);
-          if(ix>=0){
-            ByteBuffer buf=encoder.getInputBuffer(ix);
-            if(buf==null)throw new IOException("Codec input unavailable");
-            int n=capture.read(chunk,0,Math.min(chunk.length,buf.capacity()),AudioRecord.READ_BLOCKING);
-            if(n<0)throw new IOException("Audio capture failure "+n);
-            n=n-(n%FRAME_BYTES);
-            if(n>0){
-              double amplitude=rms(chunk,n);level=Math.min(1,amplitude*12);
-              long now=SystemClock.elapsedRealtime();
-              if(amplitude>0.003){heard=true;silentAt=0;waiting=false;}
-              else if(heard&&silentAt==0)silentAt=now;
-              if(auto&&heard&&silentAt>0&&now-silentAt>=8000)ending=true;
-            }
-            if(n>0&&(!wait||heard)&&!ending){
-              buf.clear();buf.put(chunk,0,n);
-              encoder.queueInputBuffer(ix,0,n,frames*1000000L/RATE,0);
-              frames+=n/FRAME_BYTES;writeStarted=true;
-            }else encoder.queueInputBuffer(ix,0,0,frames*1000000L/RATE,0);
+          int n=capture.read(chunk,0,chunk.length,AudioRecord.READ_BLOCKING);
+          if(n<0){
+            if(!ending)error="Audio capture stopped ("+n+"). Audio captured so far was saved.";
+            break;
           }
-          drain(false);
+          n-=n%FRAME_BYTES;
+          if(n>0){
+            double amplitude=rms(chunk,n);level=Math.min(1,amplitude*12);
+            long now=SystemClock.elapsedRealtime();
+            if(amplitude>0.003){heard=true;silentAt=0;waiting=false;}
+            else if(heard&&silentAt==0)silentAt=now;
+            if(auto&&heard&&silentAt>0&&now-silentAt>=8000)ending=true;
+          }
+          if(n>0&&(!wait||heard)&&!ending){
+            if(asMp3){mp3.writePcm16(chunk,0,n);bytes=mp3.getBytesWritten();}
+            else queuePcm(chunk,n,frames);
+            frames+=n/FRAME_BYTES;writeStarted=true;
+          }
+          if(!asMp3)drain(false);
         }
-        if(capture.getRecordingState()==AudioRecord.RECORDSTATE_RECORDING)capture.stop();
-        int ix=-1;
-        while(ix<0){ix=encoder.dequeueInputBuffer(10000);if(ix<0)drain(false);}
-        encoder.queueInputBuffer(ix,0,0,frames*1000000L/RATE,MediaCodec.BUFFER_FLAG_END_OF_STREAM);
-        drain(true);
+        try{if(capture.getRecordingState()==AudioRecord.RECORDSTATE_RECORDING)capture.stop();}
+        catch(IllegalStateException alreadyStopped){}
+        if(asMp3){
+          mp3.finish();bytes=mp3.getBytesWritten();
+          mp3Stream.close();mp3Stream=null;fd=null;
+        }else{
+          int ix=-1;long deadline=SystemClock.elapsedRealtime()+10000;
+          while(ix<0){
+            ix=encoder.dequeueInputBuffer(10000);
+            if(ix<0){drain(false);if(SystemClock.elapsedRealtime()>deadline)throw new IOException("AAC encoder did not finish");}
+          }
+          encoder.queueInputBuffer(ix,0,0,frames*1000000L/RATE,MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+          drain(true);
+          if(muxerStarted){muxer.stop();muxerStarted=false;}
+        }
+        completed=true;
         if(!heard)error="No audible sound detected. The source app may prohibit capture.";
       }catch(Exception e){error="Recording error: "+e.getMessage();}
       finally{
         releaseAll();
         if(file!=null){
           try{
-            if(muxerStarted&&writeStarted&&bytes>0){
+            if(completed&&writeStarted&&bytes>0){
               ContentValues done=new ContentValues();done.put(MediaStore.Audio.Media.IS_PENDING,0);
-              getContentResolver().update(file,done,null,null);
+              if(getContentResolver().update(file,done,null,null)!=1)
+                throw new IOException("Android did not publish the completed file");
             }else getContentResolver().delete(file,null,null);
-          }catch(Exception ignored){}
+          }catch(Exception e){error="Could not finalize the saved recording: "+e.getMessage();}
         }
         file=null;waiting=false;level=0;active.set(false);
         stopForeground(STOP_FOREGROUND_REMOVE);stopSelf();
+      }
+    }
+    private void queuePcm(byte[] pcm,int length,long firstFrame)throws IOException{
+      int offset=0;long deadline=SystemClock.elapsedRealtime()+10000;
+      while(offset<length){
+        int ix=encoder.dequeueInputBuffer(10000);
+        if(ix<0){
+          drain(false);
+          if(SystemClock.elapsedRealtime()>deadline)throw new IOException("AAC encoder stopped accepting audio");
+          continue;
+        }
+        ByteBuffer buf=encoder.getInputBuffer(ix);
+        if(buf==null)throw new IOException("Codec input unavailable");
+        buf.clear();int count=Math.min(length-offset,buf.remaining());count-=count%FRAME_BYTES;
+        if(count==0)throw new IOException("Codec input buffer is too small");
+        buf.put(pcm,offset,count);
+        encoder.queueInputBuffer(ix,0,count,(firstFrame+offset/FRAME_BYTES)*1000000L/RATE,0);
+        offset+=count;drain(false);
       }
     }
     private void drain(boolean finishing)throws IOException{
@@ -514,7 +654,8 @@ public class MainActivity extends Activity {
       for(int attempts=0;;){
         int ix=encoder.dequeueOutputBuffer(info,finishing?10000:0);
         if(ix==MediaCodec.INFO_TRY_AGAIN_LATER){
-          if(!finishing||attempts++>100)break;
+          if(!finishing)break;
+          if(attempts++>1000)throw new IOException("AAC encoder did not flush its final frames");
           continue;
         }
         if(ix==MediaCodec.INFO_OUTPUT_FORMAT_CHANGED){
@@ -541,8 +682,11 @@ public class MainActivity extends Activity {
       try{if(encoder!=null)encoder.release();}catch(Exception ignored){}
       try{if(muxer!=null&&muxerStarted)muxer.stop();}catch(Exception ignored){}
       try{if(muxer!=null)muxer.release();}catch(Exception ignored){}
+      try{if(mp3!=null)mp3.close();}catch(Exception ignored){}
+      try{if(mp3Stream!=null)mp3Stream.close();}catch(Exception ignored){}
       try{if(fd!=null)fd.close();}catch(Exception ignored){}
       try{if(projection!=null)projection.stop();}catch(Exception ignored){}
+      capture=null;encoder=null;muxer=null;mp3=null;mp3Stream=null;fd=null;projection=null;
     }
     @Override public void onDestroy(){ending=true;super.onDestroy();}
   }

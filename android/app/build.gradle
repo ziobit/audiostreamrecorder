@@ -1,6 +1,7 @@
 plugins {
   id 'com.android.application'
 }
+configurations { jump3rSources }
 android {
   namespace 'com.streamsaver.recorder'
   compileSdk 35
@@ -8,11 +9,26 @@ android {
     applicationId 'com.streamsaver.recorder'
     minSdk 29
     targetSdk 35
-    versionCode 2
-    versionName '1.1.0'
+    versionCode 3
+    versionName '1.2.0'
   }
+  buildFeatures { buildConfig true }
+  sourceSets.main.assets.srcDir(layout.buildDirectory.dir('generated/thirdPartyAssets'))
   compileOptions {
     sourceCompatibility JavaVersion.VERSION_17
     targetCompatibility JavaVersion.VERSION_17
   }
 }
+
+dependencies {
+  implementation 'de.sciss:jump3r:1.0.5'
+  jump3rSources 'de.sciss:jump3r:1.0.5:sources'
+  testImplementation 'junit:junit:4.13.2'
+}
+
+// Bundle the unmodified LGPL encoder source alongside its notice in the APK.
+tasks.register('copyMp3EncoderSources', Copy) {
+  from configurations.jump3rSources
+  into layout.buildDirectory.dir('generated/thirdPartyAssets/third_party')
+}
+tasks.named('preBuild').configure { dependsOn 'copyMp3EncoderSources' }

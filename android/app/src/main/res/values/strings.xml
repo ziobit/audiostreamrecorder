@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="app_author">Marco Vezzale</string>
+  <string name="app_author_email">marcovezzale@gmail.com</string>
+  <string name="app_description">Offline audio recorder and player by Marco Vezzale — marcovezzale@gmail.com</string>
+</resources>

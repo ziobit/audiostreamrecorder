@@ -36,9 +36,17 @@ jobs:
       - name: Build and verify debug APK
         working-directory: android
         run: |
-          gradle --no-daemon assembleDebug
+          gradle --no-daemon testDebugUnitTest assembleDebug
           test -s app/build/outputs/apk/debug/app-debug.apk
           sha256sum app/build/outputs/apk/debug/app-debug.apk
+      - name: Independently decode and verify MP3 fixtures
+        working-directory: android
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends -y ffmpeg
+          fi
+          python3 tools/verify_mp3.py app/build/mp3-verification
       - uses: actions/upload-artifact@v4
         with:
           name: stream-saver-android-debug-apk

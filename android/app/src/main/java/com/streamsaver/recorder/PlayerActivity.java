@@ -28,6 +28,7 @@ import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -41,6 +42,7 @@ import java.util.Locale;
 /**
  * Self-contained local audio player and real-time Winamp-inspired visualizer.
  * Captures the MediaPlayer audio session only; never accesses a microphone or network.
+ * @author Marco Vezzale (marcovezzale@gmail.com)
  */
 public class PlayerActivity extends Activity {
   private static final int BG=0xFF070C18, PANEL=0xFF111C30;
@@ -51,6 +53,7 @@ public class PlayerActivity extends Activity {
   private final Handler handler=new Handler(Looper.getMainLooper());
   private final ArrayList<Track> tracks=new ArrayList<>();
   private MediaPlayer media;
+  private boolean playerReady=false;
   private Visualizer audioVisualizer;
   private VisualizerView graphics;
   private LinearLayout root, header, fullTop, fullBottom;
@@ -132,7 +135,7 @@ public class PlayerActivity extends Activity {
     Uri collection=MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
     String[] columns={MediaStore.Audio.Media._ID,MediaStore.Audio.Media.DISPLAY_NAME};
     try(Cursor c=getContentResolver().query(collection,columns,
-        MediaStore.Audio.Media.RELATIVE_PATH+" LIKE ?",
+        MediaStore.Audio.Media.RELATIVE_PATH+" LIKE ? AND "+MediaStore.Audio.Media.IS_PENDING+" = 0",
         new String[]{"Music/StreamSaver/%"},
         MediaStore.Audio.Media.DATE_ADDED+" DESC")) {
       while(c!=null&&c.moveToNext()&&tracks.size()<100) {
@@ -172,7 +175,7 @@ public class PlayerActivity extends Activity {
     songLabel.setEllipsize(TextUtils.TruncateAt.MARQUEE);
     songLabel.setMarqueeRepeatLimit(-1);songLabel.setSelected(true);
     add(bottom,songLabel,0);
-    metaLabel=text("AAC · LOCAL RECORDING",11,DIM,false);add(bottom,metaLabel,4);
+    metaLabel=text("LOCAL RECORDING",11,DIM,false);add(bottom,metaLabel,4);
     LinearLayout timeline=stack(true);timeline.setGravity(Gravity.CENTER_VERTICAL);
     add(bottom,timeline,8);
     clock=text("00:00 / 00:00",12,CYAN,true);
@@ -205,7 +208,7 @@ public class PlayerActivity extends Activity {
     Button fullscreen=button("⛶   FULLSCREEN VISUAL EFFECTS",0xFF263F57,CYAN);
     add(bottom,fullscreen,9);
     fullscreen.setOnClickListener(v->toggleFullscreenEffects(true));
-    TextView note=text("Visual effects follow the playing audio when Android allows analysis.",11,DIM,false);
+    TextView note=text("Logarithmic bands · automatic levels · tap the display to change effects.",11,DIM,false);
     note.setGravity(Gravity.CENTER);add(root,note,8);
   }
   private void buildFullscreen() {
@@ -254,15 +257,18 @@ public class PlayerActivity extends Activity {
         if(immersive)showFullControls();
       }
       @Override public void onProgressChanged(SeekBar s,int value,boolean user) {
-        if(user&&media!=null) {
-          int duration=Math.max(0,media.getDuration());
-          if(full)fullClock.setText(formatTime(duration*value/1000)+ " / "+formatTime(duration));
-          else clock.setText(formatTime(duration*value/1000)+ " / "+formatTime(duration));
+        if(user&&media!=null&&playerReady) {
+          try {
+            int duration=Math.max(0,media.getDuration());
+            int position=(int)((long)duration*value/1000);
+            if(full)fullClock.setText(formatTime(position)+ " / "+formatTime(duration));
+            else clock.setText(formatTime(position)+ " / "+formatTime(duration));
+          }catch(IllegalStateException ignored){}
         }
       }
       @Override public void onStopTrackingTouch(SeekBar s) {
         if(full)fullDragging=false;else dragging=false;
-        if(media!=null) {
+        if(media!=null&&playerReady) {
           try{media.seekTo((int)((long)media.getDuration()*s.getProgress()/1000));}
           catch(Exception ignored){}
         }
@@ -275,7 +281,9 @@ public class PlayerActivity extends Activity {
     index=next;
     Track t=tracks.get(index);
     songLabel.setText(t.name);fullName.setText(t.name);
-    metaLabel.setText("TRACK "+(index+1)+" / "+tracks.size()+" · AAC · MUSIC/STREAMSAVER");
+    String lower=t.name.toLowerCase(Locale.ROOT);
+    String format=lower.endsWith(".mp3")?"MP3":lower.endsWith(".m4a")?"AAC / M4A":"AUDIO";
+    metaLabel.setText("TRACK "+(index+1)+" / "+tracks.size()+" · "+format+" · MUSIC/STREAMSAVER");
     try {
       media=new MediaPlayer();
       media.setAudioAttributes(new AudioAttributes.Builder()
@@ -283,11 +291,14 @@ public class PlayerActivity extends Activity {
         .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build());
       media.setDataSource(this,t.uri);
       media.setOnPreparedListener(p->{
+        if(p!=media)return;
+        playerReady=true;
         p.start();
         setupAudioVisualizer();
         updateClock();
       });
       media.setOnCompletionListener(p->{
+        if(p!=media)return;
         if(repeat==1) {
           p.seekTo(0);p.start();
         } else if(index+1<tracks.size()||repeat==2||shuffle) {
@@ -295,8 +306,9 @@ public class PlayerActivity extends Activity {
         } else updatePlayButtons();
       });
       media.setOnErrorListener((mp,what,extra)->{
+        if(mp!=media)return true;
         Toast.makeText(this,"Unable to play this recording.",Toast.LENGTH_LONG).show();
-        updatePlayButtons();return true;
+        releasePlayer();updatePlayButtons();return true;
       });
       media.prepareAsync();
     }catch(Exception e) {
@@ -305,41 +317,48 @@ public class PlayerActivity extends Activity {
     }
     updatePlayButtons();
   }
-  private void releasePlayer() {
+  private void releaseVisualizer() {
     if(audioVisualizer!=null) {
       try{audioVisualizer.setEnabled(false);}catch(Exception ignored){}
       try{audioVisualizer.release();}catch(Exception ignored){}
       audioVisualizer=null;
     }
-    graphics.setInput(null,null);
+    if(graphics!=null)graphics.resetInput();
+  }
+  private void releasePlayer() {
+    playerReady=false;
+    releaseVisualizer();
     if(media!=null) {
       try{media.reset();media.release();}catch(Exception ignored){}
       media=null;
     }
   }
   private void setupAudioVisualizer() {
-    if(media==null)return;
+    if(media==null||!playerReady)return;
     if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED)return;
+    releaseVisualizer();
     try {
       audioVisualizer=new Visualizer(media.getAudioSessionId());
       int[] range=Visualizer.getCaptureSizeRange();
-      int requested=Math.min(1024,range[1]);
-      int captureSize=Integer.highestOneBit(Math.max(requested,range[0]));
-      audioVisualizer.setCaptureSize(captureSize);
-      int rate=Math.min(12000,Visualizer.getMaxCaptureRate());
-      audioVisualizer.setDataCaptureListener(new Visualizer.OnDataCaptureListener() {
+      int captureSize=Integer.highestOneBit(range[1]);
+      if(captureSize<range[0])throw new IllegalStateException("Unsupported FFT capture size");
+      if(audioVisualizer.setCaptureSize(captureSize)!=Visualizer.SUCCESS)
+        throw new IllegalStateException("Unable to set FFT capture size");
+      // Normalization prevents the phone's volume slider from shrinking the picture.
+      audioVisualizer.setScalingMode(Visualizer.SCALING_MODE_NORMALIZED);
+      int rate=Math.min(30000,Visualizer.getMaxCaptureRate());
+      int listenerResult=audioVisualizer.setDataCaptureListener(new Visualizer.OnDataCaptureListener() {
         @Override public void onWaveFormDataCapture(Visualizer source,byte[] data,int sampleRate) {
-          graphics.setWave(data);
+          if(source==audioVisualizer)graphics.setWave(data);
         }
         @Override public void onFftDataCapture(Visualizer source,byte[] data,int sampleRate) {
-          graphics.setSpectrum(data);
+          if(source==audioVisualizer)graphics.setSpectrum(data,sampleRate);
         }
       },rate,true,true);
-      audioVisualizer.setEnabled(true);
+      if(listenerResult!=Visualizer.SUCCESS||audioVisualizer.setEnabled(true)!=Visualizer.SUCCESS)
+        throw new IllegalStateException("Live audio analysis unavailable");
     }catch(Exception e) {
-      try{if(audioVisualizer!=null)audioVisualizer.release();}catch(Exception ignored){}
-      audioVisualizer=null;
-      graphics.setInput(null,null);
+      releaseVisualizer();
     }
   }
   @Override public void onRequestPermissionsResult(int code,String[] p,int[] grants) {
@@ -348,7 +367,7 @@ public class PlayerActivity extends Activity {
       setupAudioVisualizer();
   }
   private void togglePlayback() {
-    if(media==null)return;
+    if(media==null||!playerReady)return;
     try{
       if(media.isPlaying())media.pause();else media.start();
       updatePlayButtons();
@@ -370,11 +389,16 @@ public class PlayerActivity extends Activity {
     playTrack(position);
     if(immersive)showFullControls();
   }
+  private boolean isPlaying() {
+    try{return playerReady&&media!=null&&media.isPlaying();}
+    catch(IllegalStateException ignored){return false;}
+  }
   private void updatePlayButtons() {
-    boolean playing=false;
-    try{playing=media!=null&&media.isPlaying();}catch(Exception ignored){}
-    if(mainPlay!=null)mainPlay.setText(playing?"❚❚":"▶");
-    if(fullPlay!=null)fullPlay.setText(playing?"❚❚":"▶");
+    boolean playing=isPlaying();
+    if(mainPlay!=null){mainPlay.setText(playing?"❚❚":"▶");mainPlay.setEnabled(playerReady);}
+    if(fullPlay!=null){fullPlay.setText(playing?"❚❚":"▶");fullPlay.setEnabled(playerReady);}
+    if(seek!=null)seek.setEnabled(playerReady);
+    if(fullSeek!=null)fullSeek.setEnabled(playerReady);
   }
   private static String formatTime(int millis) {
     int sec=Math.max(0,millis)/1000;
@@ -384,7 +408,7 @@ public class PlayerActivity extends Activity {
     @Override public void run(){updateClock();handler.postDelayed(this,300);}
   };
   private void updateClock() {
-    if(media==null)return;
+    if(media==null||!playerReady)return;
     try {
       int duration=Math.max(0,media.getDuration());
       int position=Math.max(0,media.getCurrentPosition());
@@ -414,6 +438,7 @@ public class PlayerActivity extends Activity {
     immersive=enable;
     ((ViewGroup)graphics.getParent()).removeView(graphics);
     if(enable){
+      getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
       fullRoot.addView(graphics,0,new FrameLayout.LayoutParams(-1,-1));
       setContentView(fullRoot);
       getWindow().getDecorView().setSystemUiVisibility(
@@ -422,6 +447,7 @@ public class PlayerActivity extends Activity {
         View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN|View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
       showFullControls();
     } else {
+      getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
       handler.removeCallbacks(hideFullControls);
       fullRoot.removeView(graphics);
       visualHolder.addView(graphics,new FrameLayout.LayoutParams(-1,-1));
@@ -442,13 +468,28 @@ public class PlayerActivity extends Activity {
     handler.removeCallbacksAndMessages(null);releasePlayer();super.onDestroy();
   }
 
+  private static final class AudioFrame {
+    final byte[] data;
+    final int samplingRateMilliHz;
+    final long timeMs;
+    AudioFrame(byte[] source,int sampleRate) {
+      data=Arrays.copyOf(source,source.length);
+      samplingRateMilliHz=sampleRate;
+      timeMs=SystemClock.uptimeMillis();
+    }
+  }
+
   private class VisualizerView extends View {
     private final Paint p=new Paint(3);
     private final Path path=new Path();
-    private final float[] heights=new float[64],peaks=new float[64];
-    private volatile byte[] fft,wave;
+    private final SpectrumAnalyzer analyzer=new SpectrumAnalyzer();
+    private final float[] heights=new float[64],peaks=new float[64],targets=new float[64];
+    private volatile AudioFrame spectrumFrame,waveFrame;
+    private AudioFrame analyzedSpectrum,analyzedWave;
     private int effect=0;
-    private float phase=0;
+    private float phase=0,waveReference=8f;
+    private long lastDrawMs=0;
+    private boolean liveSpectrum=false,liveWave=false,waveHasSignal=false,playing=false;
     private Shader gradient;
     private int w,h;
     VisualizerView() {
@@ -464,47 +505,45 @@ public class PlayerActivity extends Activity {
       });
     }
     void setMode(int n){effect=n;invalidate();}
-    void setWave(byte[] data){wave=data==null?null:Arrays.copyOf(data,data.length);}
-    void setSpectrum(byte[] data){fft=data==null?null:Arrays.copyOf(data,data.length);}
-    void setInput(byte[] f,byte[] a){fft=f;wave=a;Arrays.fill(heights,0);Arrays.fill(peaks,0);}
+    void setWave(byte[] data){waveFrame=data==null?null:new AudioFrame(data,0);}
+    void setSpectrum(byte[] data,int sampleRate){
+      spectrumFrame=data==null?null:new AudioFrame(data,sampleRate);
+    }
+    void resetInput(){
+      spectrumFrame=null;waveFrame=null;analyzedSpectrum=null;analyzedWave=null;
+      liveSpectrum=false;liveWave=false;waveHasSignal=false;waveReference=8f;
+      analyzer.reset();
+      Arrays.fill(targets,0);Arrays.fill(heights,0);Arrays.fill(peaks,0);
+    }
+    @Override protected void onAttachedToWindow() {
+      super.onAttachedToWindow();lastDrawMs=0;postInvalidateOnAnimation();
+    }
+    @Override protected void onWindowVisibilityChanged(int visibility) {
+      super.onWindowVisibilityChanged(visibility);
+      if(visibility==View.VISIBLE){lastDrawMs=0;postInvalidateOnAnimation();}
+    }
     @Override protected void onSizeChanged(int width,int height,int oldW,int oldH) {
       super.onSizeChanged(width,height,oldW,oldH);
       w=width;h=height;
-      gradient=new RadialGradient(width*0.52f,height*0.56f,Math.max(width,height)*0.8f,
+      if(width>0&&height>0)gradient=new RadialGradient(width*0.52f,height*0.56f,Math.max(width,height)*0.8f,
         new int[]{0xFF1A3451,0xFF0D1B32,0xFF070B17},null,Shader.TileMode.CLAMP);
     }
     private void color(int c,int alpha) {
       p.setShader(null);
       p.setStyle(Paint.Style.FILL);
       p.setStrokeWidth(dp(1));
+      p.setStrokeCap(Paint.Cap.BUTT);
       p.setColor((c&0x00FFFFFF)|(Math.max(0,Math.min(255,alpha))<<24));
     }
     private int spectral(int i) {
       float[] hsv={170f+146f*i/63f,0.72f,1f};
       return Color.HSVToColor(hsv);
     }
-    private float value(int i,byte[] input) {
-      if(input==null||input.length<16) {
-        return 0.12f+0.09f*(float)Math.sin(phase*1.2+i*0.39);
-      }
-      int bins=input.length/2;
-      int first=1+(int)(Math.pow(i/64.0,1.7)*(bins-4));
-      int last=Math.min(bins-1,first+Math.max(1,(int)(bins/64.0)));
-      float best=0;
-      for(int bin=first;bin<=last;bin++) {
-        int re=input[2*bin],im=input[2*bin+1];
-        float magnitude=(float)Math.hypot(re,im);
-        if(magnitude>best)best=magnitude;
-      }
-      double db=20*Math.log10(best+1);
-      return Math.max(0,Math.min(1,(float)((db-24)/51)));
-    }
     private void background(Canvas c) {
       c.drawColor(BG);
       if(gradient!=null){p.setShader(gradient);c.drawRect(0,0,w,h,p);p.setShader(null);}
       for(int i=0;i<=11;i++) {
-        color(CYAN,13);
-        p.setStrokeWidth(dp(0.5f));
+        color(CYAN,13);p.setStrokeWidth(dp(0.5f));
         float y=h*i/11f;c.drawLine(0,y,w,y,p);
       }
       for(int i=0;i<=16;i++) {
@@ -523,50 +562,72 @@ public class PlayerActivity extends Activity {
       p.setTypeface(Typeface.create("monospace",Typeface.BOLD));
       p.setTextSize(dp(11));
       c.drawText("STREAM SAVER  /  "+title,dp(16),dp(25),p);
-      p.setTypeface(null);
-      p.setTextSize(dp(10));
-      color(fft!=null?CYAN:GOLD,185);
-      String status=fft!=null?"● LIVE AUDIO FFT":"● ANIMATED / LIVE FFT UNAVAILABLE";
+      p.setTypeface(null);p.setTextSize(dp(10));
+      boolean live=effect==1?liveWave:liveSpectrum;
+      color(live?CYAN:GOLD,200);
+      String status;
+      if(live)status=effect==0?"● LIVE · AUTO LEVEL · LOG BANDS":"● LIVE AUDIO · AUTO LEVEL";
+      else if(!playerReady)status="● WAITING FOR AUDIO";
+      else if(!playing)status="Ⅱ PAUSED";
+      else status="● LIVE ANALYSIS UNAVAILABLE";
       c.drawText(status,dp(16),h-dp(15),p);
     }
+    private String frequencyLabel(float hz) {
+      if(hz>=1000)return Math.round(hz/1000f)+"k";
+      return String.valueOf(Math.round(hz));
+    }
     private void spectrum(Canvas c) {
-      float top=dp(44),bottom=h-dp(37);
-      float available=Math.max(dp(25),bottom-top);
-      float padding=dp(19),step=(w-2*padding)/64f;
+      float top=Math.min(dp(41),h*.25f),bottom=Math.max(top,h-dp(59));
+      float available=Math.max(0,bottom-top);
+      float padding=dp(19),step=Math.max(1,w-2*padding)/64f;
       for(int i=0;i<64;i++) {
         float amount=heights[i];
         float x=padding+i*step+step*.07f;
         float width=Math.max(1,step*.79f);
-        float barHeight=Math.max(dp(2),available*amount);
+        float barHeight=Math.min(available,Math.max(dp(1),available*amount));
         int base=spectral(i);
-        p.setShader(new LinearGradient(x,bottom-barHeight,x,bottom,
+        p.setShader(new LinearGradient(x,bottom-barHeight-dp(1),x,bottom,
           new int[]{0xFFF8D4FA,base,(base&0x00FFFFFF)|0x66000000},null,Shader.TileMode.CLAMP));
         c.drawRoundRect(x,bottom-barHeight,x+width,bottom,Math.min(dp(3),width*.4f),Math.min(dp(3),width*.4f),p);
         p.setShader(null);
-        color(CYAN,200);
-        c.drawRect(x,bottom-Math.max(barHeight,available*peaks[i])-dp(4),x+width,bottom-Math.max(barHeight,available*peaks[i])-dp(2),p);
+        if(peaks[i]>.015f){
+          color(CYAN,200);
+          float peakY=Math.max(top,bottom-available*peaks[i]);
+          c.drawRect(x,peakY,x+width,peakY+dp(2),p);
+        }
       }
       color(CYAN,75);p.setStrokeWidth(dp(1));
-      c.drawLine(dp(15),bottom+dp(4),w-dp(15),bottom+dp(4),p);
+      c.drawLine(padding,bottom+dp(3),w-padding,bottom+dp(3),p);
+      float low=analyzer.getLowHz(),high=analyzer.getHighHz();
+      float[] ticks={low,250f,1000f,4000f,high};
+      p.setTextSize(dp(10));color(DIM,220);
+      for(int i=0;i<ticks.length;i++) {
+        if(ticks[i]<low||ticks[i]>high)continue;
+        float fraction=(float)(Math.log(ticks[i]/low)/Math.log(high/low));
+        p.setTextAlign(i==0?Paint.Align.LEFT:i==ticks.length-1?Paint.Align.RIGHT:Paint.Align.CENTER);
+        c.drawText(frequencyLabel(ticks[i])+(i==ticks.length-1?" Hz":""),
+          padding+fraction*(w-2*padding),bottom+dp(19),p);
+      }
+      p.setTextAlign(Paint.Align.LEFT);
     }
     private void oscilloscope(Canvas c) {
-      float mid=h*.51f;
+      float top=Math.min(dp(41),h*.25f),bottom=Math.max(top,h-dp(37));
+      float mid=(top+bottom)*.5f,amplitude=Math.max(0,(bottom-top)*.5f-dp(3));
       float left=dp(18),right=w-dp(18);
       color(PINK,130);p.setStrokeWidth(dp(1));
       c.drawLine(left,mid,right,mid,p);
-      byte[] data=wave;
+      AudioFrame frame=waveFrame;
+      byte[] data=liveWave&&waveHasSignal&&frame!=null?frame.data:null;
       for(int layer=4;layer>=0;layer--) {
         path.rewind();
         int samples=Math.max(1,(int)((right-left)/2));
         for(int i=0;i<=samples;i++) {
-          float t=i/(float)samples;
-          float signal;
+          float t=i/(float)samples,signal=0f;
           if(data!=null&&data.length>0) {
             int j=Math.min(data.length-1,(int)(t*(data.length-1)));
-            signal=((data[j]&255)-128)/128f;
-          } else signal=(float)(Math.sin(t*42+phase*4)*0.38+Math.sin(t*89-phase*5)*0.16);
-          float x=left+t*(right-left);
-          float y=mid+signal*h*(.25f+layer*.008f);
+            signal=Math.max(-1f,Math.min(1f,((data[j]&255)-128)/waveReference));
+          }
+          float x=left+t*(right-left),y=mid-signal*amplitude;
           if(i==0)path.moveTo(x,y);else path.lineTo(x,y);
         }
         color(layer==0?CYAN:(layer%2==0?PINK:CYAN),layer==0?255:26+(4-layer)*10);
@@ -575,13 +636,14 @@ public class PlayerActivity extends Activity {
       }
       for(int k=0;k<5;k++) {
         color(CYAN,42);
-        float y=mid+(k-2)*h*.11f;
+        float y=mid+(k-2)*amplitude*.45f;
         c.drawLine(left,y,right,y,p);
       }
     }
     private void tunnel(Canvas c) {
-      float cx=w*.5f,cy=h*.51f;
-      float radius=Math.min(w,h)*.43f;
+      float top=Math.min(dp(41),h*.25f),bottom=Math.max(top,h-dp(37));
+      float cx=w*.5f,cy=(top+bottom)*.5f;
+      float radius=Math.max(1,Math.min(w,bottom-top)*.47f);
       for(int ring=12;ring>=1;ring--) {
         float r=radius*ring/12f;
         color(ring%3==0?PINK:CYAN,15+(12-ring)*5);
@@ -590,9 +652,8 @@ public class PlayerActivity extends Activity {
       }
       for(int i=0;i<64;i++) {
         float angle=(float)(i*Math.PI*2/64+phase*.14);
-        float value=heights[i];
-        float inner=radius*(.24f+.08f*(float)Math.sin(phase+i*.12));
-        float outer=inner+radius*(.15f+.70f*value);
+        float value=heights[i],inner=radius*.25f;
+        float outer=inner+(radius-inner)*value;
         float sx=cx+(float)Math.cos(angle)*inner,sy=cy+(float)Math.sin(angle)*inner;
         float ex=cx+(float)Math.cos(angle)*outer,ey=cy+(float)Math.sin(angle)*outer;
         color(spectral(i),160);
@@ -605,29 +666,45 @@ public class PlayerActivity extends Activity {
       color(PINK,60);c.drawCircle(cx,cy,innerGlow*1.2f,p);
       color(CYAN,200);p.setStyle(Paint.Style.STROKE);p.setStrokeWidth(dp(2.5f));
       c.drawCircle(cx,cy,innerGlow,p);
-      color(TEXT,225);p.setStyle(Paint.Style.FILL);
-      p.setTextAlign(Paint.Align.CENTER);
+      color(TEXT,225);p.setStyle(Paint.Style.FILL);p.setTextAlign(Paint.Align.CENTER);
       p.setTextSize(dp(11));p.setTypeface(Typeface.create("monospace",Typeface.BOLD));
-      c.drawText("LIVE",cx,cy+dp(4),p);
+      c.drawText(liveSpectrum?"LIVE":playing?"WAIT":"PAUSED",cx,cy+dp(4),p);
       p.setTextAlign(Paint.Align.LEFT);p.setTypeface(null);
     }
     @Override protected void onDraw(Canvas canvas) {
       super.onDraw(canvas);
-      phase+=0.05f;
-      background(canvas);
-      byte[] input=fft;
-      boolean playing=false;
-      try{playing=media!=null&&media.isPlaying();}catch(Exception ignored){}
-      for(int i=0;i<64;i++) {
-        float target=playing?value(i,input):0.02f;
-        heights[i]=heights[i]*.71f+target*.29f;
-        peaks[i]=Math.max(heights[i],peaks[i]-.012f);
+      long now=SystemClock.uptimeMillis();
+      float seconds=lastDrawMs==0?1f/30f:Math.max(.001f,Math.min(.1f,(now-lastDrawMs)/1000f));
+      lastDrawMs=now;phase+=seconds*1.5f;
+      playing=isPlaying();
+      AudioFrame spectrum=spectrumFrame,wave=waveFrame;
+      liveSpectrum=playing&&spectrum!=null&&now-spectrum.timeMs<750;
+      liveWave=playing&&wave!=null&&now-wave.timeMs<750;
+      if(liveSpectrum&&spectrum!=analyzedSpectrum) {
+        float elapsed=analyzedSpectrum==null?1f/30f:(spectrum.timeMs-analyzedSpectrum.timeMs)/1000f;
+        analyzer.analyze(spectrum.data,spectrum.samplingRateMilliHz,elapsed,targets);
+        analyzedSpectrum=spectrum;
+      }else if(!liveSpectrum)Arrays.fill(targets,0f);
+      if(liveWave&&wave!=analyzedWave) {
+        int peak=0;
+        for(byte value:wave.data)peak=Math.max(peak,Math.abs((value&255)-128));
+        float elapsed=analyzedWave==null?1f/30f:Math.min(.25f,(wave.timeMs-analyzedWave.timeMs)/1000f);
+        waveReference=Math.max(8f,Math.max(peak,waveReference*(float)Math.exp(-elapsed/1.2f)));
+        waveHasSignal=peak>=2;analyzedWave=wave;
       }
+      for(int i=0;i<64;i++) {
+        float timeConstant=targets[i]>heights[i]?.025f:.22f;
+        float amount=1f-(float)Math.exp(-seconds/timeConstant);
+        heights[i]+=(targets[i]-heights[i])*amount;
+        if(targets[i]>=.999f&&heights[i]>.99f)heights[i]=1f;
+        peaks[i]=Math.max(heights[i],peaks[i]-seconds*.35f);
+      }
+      background(canvas);
       if(effect==0)spectrum(canvas);
       else if(effect==1)oscilloscope(canvas);
       else tunnel(canvas);
       label(canvas,MODES[effect]);
-      if(getWindowVisibility()==View.VISIBLE)postInvalidateDelayed(34);
+      if(getWindowVisibility()==View.VISIBLE&&isShown())postInvalidateDelayed(33);
     }
   }
 }
